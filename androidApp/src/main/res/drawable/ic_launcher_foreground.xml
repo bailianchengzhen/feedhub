@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- App 图标的前景（矢量，自己画的，没有下载任何素材）：三条长短递减的白色圆角条 = 一条聚合信息流。
+     108×108 的画布，内容都在中间 72×72 的安全区里（18~90），自适应图标被裁成圆 / 方 / 水滴都不会切到。
+     底色是 values/colors.xml 的 ic_launcher_background（品牌蓝 #3B6EA8）。 -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- 第一行（最长） -->
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M30,32 H78 A4,4 0 0 1 82,36 V40 A4,4 0 0 1 78,44 H30 A4,4 0 0 1 26,40 V36 A4,4 0 0 1 30,32 Z" />
+    <!-- 第二行 -->
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M30,50 H68 A4,4 0 0 1 72,54 V58 A4,4 0 0 1 68,62 H30 A4,4 0 0 1 26,58 V54 A4,4 0 0 1 30,50 Z" />
+    <!-- 第三行（最短），右边一个小圆点，像一条待读的更新 -->
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M30,68 H58 A4,4 0 0 1 62,72 V76 A4,4 0 0 1 58,80 H30 A4,4 0 0 1 26,76 V72 A4,4 0 0 1 30,68 Z" />
+    <path
+        android:fillColor="#FFB7D2F2"
+        android:pathData="M74,62 a6,6 0 1,0 0,12 a6,6 0 1,0 0,-12 Z" />
+</vector>

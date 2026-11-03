@@ -1,0 +1,98 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/feedhub-core",
+    "crates/feedhub-net",
+    "crates/feedhub-ffi",
+    "crates/feedhub-gst",
+    "crates/uniffi-bindgen",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+
+# 性能优先（磁盘体积可让位于运行效率）：opt-level = 3 + fat LTO。
+# panic 用默认的 unwind：UniFFI 在边界上 catch_unwind，把 Rust 的 panic 变成一次 Internal 错误，
+# 不会把整个 App 带走。**不要**改成 abort。
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+strip = "debuginfo"
+
+[workspace.dependencies]
+feedhub-core = { path = "crates/feedhub-core" }
+# 0.30.0 起 Kotlin 绑定改用 JNA 的 "direct mapping"（`Native.register` + `external fun`），
+# 不再是 `Library` 接口 + `java.lang.reflect.Proxy`。0.29 那套是**每个 FFI 函数**在 `UniffiLib`
+# 的 `<clinit>` 里生成一个 static `Method` 字段，方法数一过 ~1200 就撞 64 KB 字节码上限
+# 。换掉这条路，上限就不存在了。
+# **别往回调**。
+# 锁 `=0.32.1` 而不是 `0.32`：0.32.1 修了 aarch64 上 checksum 校验失败（#2935），安卓必需。
+uniffi = "=0.32.1"
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["arbitrary_precision"] }
+thiserror = "2"
+md-5 = "0.10"
+# --- 资料库同步---------------------------------------------
+# 全是 RustCrypto 的纯 Rust 实现（没有 C、没有平台绑定、没有网络栈）。算法的**参数和编码必须和
+# Kotlin 那边（`javax.crypto` 的 AES/GCM/NoPadding + PBKDF2WithHmacSHA256 + BouncyCastle 的 X25519 /
+# HKDF-SHA256）完全一致**——老版本 App 和新版本要能互相同步，所以每条都有逐字节对拍的单测
+# （见 `sync/crypto.rs` 的 `tests`）。
+aes-gcm = "0.10"
+# AES 的块运算（Chrome Cookie 导入的 CBC 用它；本来就是 `aes-gcm` 的依赖，这里显式写出来给
+# `feedhub-core` 直接 `aes::Aes128`）。
+aes = "0.8"
+# --- Chrome Cookie 导入的密码学-------------------------------
+# `v10` / `v11` 是 PBKDF2-HMAC-SHA1(密码, "saltysalt", 1 次, 16 字节) + AES-128-CBC（IV = 16 个空格），
+# 库版本 ≥ 24 时明文前面还有 32 字节 sha256(host_key)。
+# 都是 RustCrypto 的纯 Rust 实现，和 `rust-sync` 用的 `aes` / `sha2` / `pbkdf2` 同一家；没有网络栈。
+cbc = { version = "0.1", features = ["alloc"] }
+sha1 = "0.10"
+hmac = "0.12"
+blowfish = { version = "0.9", features = ["bcrypt"] }
+sm3 = "0.4"
+x25519-dalek = { version = "2", features = ["static_secrets"] }
+hkdf = "0.12"
+pbkdf2 = "0.12"
+sha2 = "0.10"
+# gzip：同步文件正文是 `gzip(快照 JSON)`。压缩之后的字节**不要求相等**（压缩器实现无关），
+# 对拍的口径是"两边都能解对方压的 + 解开后逐字节相同"（`LibrarySyncFileTest`）。
+flate2 = "1"
+# base64url（无填充）：设备 id / 会话 id / 公钥 / 文件头里的字段，口径同 `java.util.Base64.getUrlEncoder`
+# （`sync/b64.rs`，含"URL 解码器还认 `+` `/`"这条 JDK 的怪癖）。
+base64 = "0.22"
+# 弹幕屏蔽词的正则：`regex:第\d+集` / `/第\d+集/` 这些写法要和 Kotlin 的
+# `Regex(body, RegexOption.IGNORE_CASE)` + `containsMatchIn` 一致（编译失败 / 匹配空文字的规则算无效）。
+# 纯 Rust、没有 C、没有网络栈；粒度是"一个进程几十条规则、编译一次"，不是热路径。
+regex = "1"
+# 只在**不带随机源**的便利入口里用（生产路径）；测试一律注入固定随机源，对拍才逐字节可比。
+getrandom = "0.2"
+# --- 翻译的语言识别-----------------------------------------
+# 和 Kotlin 那边 `com.github.pemistahl:lingua:1.2.2` 同一个作者的 Rust 版。**只开中文 / 英文**
+# （默认特性会带 75 种语言的模型，`--no-default-features` + 两个 feature 才只编这两张）。
+#
+# **版本选 1.8（最新）不是随便挑的**：1.6 起加了"按出现字符最多的 alphabet 过滤语言"的脚本判定，
+# 1.8 因此能把**日语（假名）判成"认不出"**（Kotlin 1.2.2 也是这个结论）；反过来，没有这层的 1.4
+# 会把日语判成中文（→ 不翻），那是功能倒退。代价是"中英混排、拉丁字符占多数"的短文本 1.8 判成英文
+# （Kotlin 1.2.2 判中文），全仓 fixture 上 4391 条里有 128 条这种，
+# 那些文本基本来自国内平台（默认不自动翻、门控在识别之前就返回），实际不受影响。
+lingua = { version = "1.8", default-features = false, features = ["chinese", "english"] }
+# 停 `llama-server` 要先 SIGTERM 再 SIGKILL（Java `Process.destroy()` 的语义，std 的 `Child::kill`
+# 只有 SIGKILL）。`libc` 本来就在依赖树里（getrandom / rusqlite 带进来的），加一行不添下载。
+libc = "0.2"
+# `libc::fcntl(F_SETLKW)` 是跨进程文件锁（和 Kotlin 的
+# `FileChannel.lock()` —— 也就是 `fcntl` 记录锁 —— 互斥，见 `cookies/file.rs` 的说明）。
+# 这四个 crate 在常见的离线缓存里都有，`--offline` 编得动。
+
+# --- 联网层-------------------------------------------------------
+# **只有 `feedhub-net` 用这些**；别的 crate 一行网络依赖都不许有。
+# `http2` 要打一个"Cookie 进 HPACK 动态表"的补丁（OkHttp 会索引，上游 h2 跟着 nghttp2 不索引），
+# 补丁是 vendored crate。
+[patch.crates-io]
+http2 = { path = "crates/feedhub-net/vendor/http2" }
+# `wreq-proto` 也打**一行**补丁：空值请求头的线上写法（`name: \r\n`，OkHttp 的写法）。
+# 上游对空值写 `name:\r\n`，少一个空格；贴吧 App 接口的 `cuid_gid` / `oaid` /
+# `start_scheme` / `extra` 都是空串头，`TiebaWireEquivalenceTest` 的原始字节门抓的。
+wreq-proto = { path = "crates/feedhub-net/vendor/wreq-proto" }

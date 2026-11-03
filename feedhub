@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# 先（增量）构建 cli 再运行：./feedhub feed bili
+# 设 FEEDHUB_NO_BUILD=1 跳过构建。./feedhub plugin … 在已经构建过时也不先构建。
+set -euo pipefail
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+BIN="$DIR/cli/build/install/feedhub/bin/feedhub"
+# plugin 子命令只改 plugins.toml：已经构建过就不先构建（清单可能正改到一半，构建会失败）
+if [[ -z "${FEEDHUB_NO_BUILD:-}" ]] && ! [[ "${1:-}" == plugin && -x "$BIN" ]]; then
+  "$DIR/gradlew" -p "$DIR" -q --console=plain :cli:installDist >&2
+fi
+# 给 ./feedhub plugin 找仓库根用
+export FEEDHUB_REPO="$DIR"
+exec "$BIN" "$@"

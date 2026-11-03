@@ -1,0 +1,18 @@
+# 启用的平台插件（模块目录名），顺序 = 界面上的顺序。
+#
+# 改法：./feedhub plugin list / add <模块> / remove <id>，或者直接手改这个文件；改完要重新构建
+# （./feedhub 每次运行前会自动增量构建；App 要重新打包）。不在这里的 source-* 模块不参与构建。
+# 每个模块根目录有一份 plugin.toml（id + 描述的位置）。
+plugins = [
+    "source-bilibili",
+    "source-zhihu",
+    "source-tieba",
+    "source-heybox",
+    "source-coolapk",
+    "source-xiaohongshu",
+    "source-douyin",
+    "source-x",
+    "source-youtube",
+    "source-reddit",
+    "source-tiktok",
+]

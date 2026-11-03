@@ -1,0 +1,10 @@
+# 安卓交叉编译的两个目标。**linker 不写在这里**：NDK 的路径是每台机器自己的，
+# 由 Gradle 的 `:androidApp:cargoBuildAndroid` 用 CARGO_TARGET_*_LINKER 环境变量传进去
+#
+# 16 KB 内存页：
+# 不对齐的 .so 在 16 KB 页的系统上会加载失败。NDK r28+ 的 clang 默认会做，这里再显式写上，别依赖默认值。
+[target.aarch64-linux-android]
+rustflags = ["-C", "link-arg=-Wl,-z,max-page-size=16384"]
+
+[target.x86_64-linux-android]
+rustflags = ["-C", "link-arg=-Wl,-z,max-page-size=16384"]

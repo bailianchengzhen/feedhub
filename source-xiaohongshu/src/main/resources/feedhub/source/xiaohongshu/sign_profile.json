@@ -1,0 +1,40 @@
+{
+  "schema": 1,
+  "release": {
+    "signVersion": "4.4.3",
+    "appId": "xhs-pc-web",
+    "platform": "Windows",
+    "webBuild": "6.47.2",
+    "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36",
+    "secChUa": "\"Not;A=Brand\";v=\"8\", \"Chromium\";v=\"152\", \"Google Chrome\";v=\"152\"",
+    "acceptLanguage": "zh-CN,zh;q=0.9,en;q=0.8,zh-TW;q=0.7,ja;q=0.6"
+  },
+  "dsl": "1783929625569",
+  "mns": {
+    "envConst": 1352,
+    "envFpTailHex": "f9416767c9b581635e0744fa8415",
+    "keystreamHex": "71a302257793271ddd273bcee3e4b98d9d7935e1da33f5765e2ea8afb6dc77a51a499d23b67c20660025860cbf13d4540d92497f58686c574e508f46e1956344f39139bf4faf22a3eef120b79258145b2feb5193b6478669961298e79bedca646e1a693a926154a5a7a1bd1cf0dedb742f917a747a1e388b234f2277516db7116035439730fa61e9822a0eca7bff72d8"
+  },
+  "b1": {
+    "sdkVersion": "3.5.4",
+    "frameCount": 2,
+    "x37": "0|0|0|0|0|0|0|0|0|1|0|0|1|0|0|0|0|1|1|0|0|0|0|0",
+    "x38": "0|0|1|0|1|0|0|0|0|0|1|0|1|0|1|0|0|0|0|0|0|0|0|0|0|0|0|0|0|0|0|0|0|0|0|0|0|0|0",
+    "x39": "22",
+    "x43": "Canvas not supported",
+    "x45": "__SEC_CAV__1-1-1-1-1|",
+    "x46": "false",
+    "x48": "",
+    "x49": "{list:[],type:}",
+    "x50": "131,88,103",
+    "x51": "",
+    "x52": "",
+    "x82": "1|_BHjFmfUMEtxhI|_AUuXfEG27Xa3x|__xhsPendingNotePoint25300ReportMap|__xhsReportedNotePoint25300RecordMap|setImDebugMode|anti_hp_sign_config|__rap_app_id__|__rap_report__|__rap_last_sign_cost__|__rap_last_transform_cost__|__rap_hijack_installed__|__ed1a7dddf7c818e4bd|__hp_xhs_search_input_state__|__h",
+    "timeOriginOffsetMs": -2027.8,
+    "telemetryTemplate": "{mt:{to:__TIME_ORIGIN__},m:{me:50,mm:50,md:3,mu:3,c:3,dc:1},k:{},p:{ulr:5,ps:1,f:20,b:19,vc:2,rs:1,sc:1},st:{h:0,f:1,kr:0},ft:{ae:2.8905690597867015,ak:5.664426623996462,cdr:0.15566784512304102,bf:{ar:0.9785478547854786,fr:6.242728437964205},fi:3363}}"
+  },
+  "rap": {
+    "version": 10301,
+    "templateHex": "03ea00000010346c326b326a6a673668696d6472366203ebb0037bbb041b00041c00041d00041e00041f00042000042100042200042300042400042500042600042700042800042900042e00042a00042b00042c00042d00044c00000000042f00043000043100043600000000043a00000000043c00000000044000000000044200000000044900000012000000019f615912f2010000019f617b376d044400000a000446000004f704470000019f615908a50445000000000448000443000000040012ffff048400048500000000048000048100048200048300"
+  }
+}

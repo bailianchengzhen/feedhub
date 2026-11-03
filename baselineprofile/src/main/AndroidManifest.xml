@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- baselineprofile 是 com.android.test 模块（仪器化测试），没有界面、没有组件；
+     targetProjectPath 指向 :androidApp，测试装上那台设备后由 macrobenchmark 驱动它。 -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" />

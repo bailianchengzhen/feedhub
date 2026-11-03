@@ -1,0 +1,20 @@
+.gradle/
+build/
+/rust/target/
+.kotlin/
+.idea/
+*.iml
+local.properties
+/out/
+# Cookie 一律放仓库外（~/.config/feedhub/），这里再兜一层
+cookies*.json
+*.cookies
+secrets/
+__pycache__/
+
+# 本地向量：ONNX Runtime 的 AAR 走 Maven（见 app/build.gradle.kts）。Maven 不通时可以把 AAR 拷到
+# androidApp/libs/ 改用 implementation(files(...))，那也不进 git。
+androidApp/libs/
+
+# 本机依赖（sing-box、模型、NDK……）的放置点，内容不进 git；见各 build.gradle.kts
+/deps/

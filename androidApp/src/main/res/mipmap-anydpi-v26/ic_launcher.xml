@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 自适应图标（H2，Android 8.0+；本 App 的 minSdk 就是 26，所以不需要再放各密度的 PNG，也没下载任何素材）。
+     底色 = 品牌蓝，前景 = 自己画的矢量（drawable/ic_launcher_foreground.xml）。 -->
+<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+    <background android:drawable="@color/ic_launcher_background" />
+    <foreground android:drawable="@drawable/ic_launcher_foreground" />
+</adaptive-icon>

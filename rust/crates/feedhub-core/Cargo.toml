@@ -1,0 +1,47 @@
+[package]
+name = "feedhub-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "feedhub 的纯 Rust 核心：统一模型、JSON 容错取值、各平台解析与签名（这一期只有 B站）"
+
+[dependencies]
+serde.workspace = true
+# arbitrary_precision：数字保留原始字面量（B站有些 id 是超出 i64 的数字），
+# 和 Kotlin 侧 JsonPrimitive.content 的语义尽量一致。见 src/json.rs。
+serde_json.workspace = true
+md-5.workspace = true
+thiserror.workspace = true
+# 本地资料库（收藏 / 历史 / 行为数据 / 向量 / 同步四张表）：Rust + rusqlite。
+# `bundled`：SQLite 自己编进 .so（桌面和安卓都不碰系统的 libsqlite3，版本固定）。
+# 默认特性里的 `ffi-sqlite-wasm-rs` 只给 wasm 目标用，关掉；`cache` 留着重（prepare_cached 用）。
+rusqlite = { version = "0.41", default-features = false, features = ["bundled", "cache"] }
+# 资料库同步：AES-256-GCM / X25519 / HKDF-SHA256 / PBKDF2-HMAC-SHA256 / SHA-256
+# + gzip + base64url。参数和编码必须和 Kotlin 那边完全一致（老版本要能和新版本互相同步），
+# 版本和理由见仓库根的 `Cargo.toml`。
+aes-gcm.workspace = true
+x25519-dalek.workspace = true
+hkdf.workspace = true
+pbkdf2.workspace = true
+sha2.workspace = true
+flate2.workspace = true
+base64.workspace = true
+getrandom.workspace = true
+# 翻译的语言识别：只要中文 / 英文两张模型，见仓库根 Cargo.toml。
+lingua.workspace = true
+# 停 llama-server 用的 SIGTERM。
+libc.workspace = true
+# 从 Chrome 的 Cookie 库导入：`v10` / `v11` 是
+# PBKDF2-HMAC-SHA1(密码, "saltysalt", 1 次, 16B) + AES-128-CBC（IV = 16 个空格），
+# 库版本 ≥ 24 时明文前面还有 32 字节 sha256(host_key)。
+# 那几段已删。
+aes.workspace = true
+cbc.workspace = true
+sha1.workspace = true
+blowfish.workspace = true
+sm3.workspace = true
+hmac.workspace = true
+# 弹幕的屏蔽词写成正则（`regex:第\d+集` / `/第\d+集/`）：Kotlin 用 `Regex(body, IGNORE_CASE)` +
+# `containsMatchIn`。`regex` crate 是纯 Rust、没有网络栈（只带 `aho-corasick` / `memchr` /
+# `regex-automata` / `regex-syntax`），版本和理由见仓库根的 `Cargo.toml`。
+regex.workspace = true

@@ -1,0 +1,21 @@
+--- a/src/hpack/header.rs
++++ b/src/hpack/header.rs
+@@ -196,13 +196,17 @@
+                     | header::AUTHORIZATION
+                     | header::CONTENT_LENGTH
+                     | header::ETAG
+                     | header::IF_MODIFIED_SINCE
+                     | header::IF_NONE_MATCH
+                     | header::LOCATION
+-                    | header::COOKIE
++                    // feedhub 补丁（feedhub-net/patches/http2-cookie-index.patch）：
++                    // OkHttp 的 HPACK 编码器**会**把 Cookie 放进动态表（golden 抓包：第二个请求
++                    // 只发 15 字节、除 :path 外全命中动态表）。这里原来跟着 nghttp2 的启发式
++                    // 把 Cookie 排除在动态表外，两边帧长度会差 27 字节。**这一行是唯一的改动。**
++                    // 删掉 header::COOKIE 之后前 3 帧从 192→191 字节、第 4 帧从 42→15，和 OkHttp 逐字节相同。
+                     | header::SET_COOKIE
+             ),
+             Header::Path(..) => true,
+             _ => false,
+         }
+     }

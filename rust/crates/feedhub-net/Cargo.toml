@@ -1,0 +1,35 @@
+[package]
+name = "feedhub-net"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "feedhub 的联网核心：TLS 指纹（Conscrypt/OkHttp 4.12 形状）+ HTTP/2 + HTTP/1.1 + 代理 + 连接池（wreq）"
+
+# **只有这一个 crate 里允许出现网络栈**（tokio / wreq / btls / http2）。
+[dependencies]
+# wreq = reqwest 的硬 fork，带"指纹模拟"的旋钮（TLS 套件 / 扩展顺序 / h2 SETTINGS / 伪头顺序 / 首流号）。
+# 版本钉死在 `Cargo.lock`：0.16.1（连带 btls 0.5.6 + http2 0.5.20）。
+# - `tokio-rt`：用 tokio 做 IO / 定时器（`compio-rt` 那条路我们不用）
+# - `gzip`：OkHttp 的 `BridgeInterceptor` 只自动加 gzip，Rust 侧也只做 gzip（不加 br，
+# 这一层通过 `CookieStore` trait 注入，不用 wreq 自带的
+# - `stream`：`Response::bytes_stream()`（`execute_stream` 用它边收边转发；只多带
+#   `tokio-util` / `sync_wrapper` 两个**已经在 `Cargo.lock` 里**的依赖）
+wreq = { version = "=0.16.1", default-features = false, features = ["tokio-rt", "gzip", "socks", "stream"] }
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "net", "time", "sync", "macros", "io-util"] }
+# HPACK 的 "Cookie 也进动态表" 补丁（见 vendor/http2 与 patches/）：wreq 的 http2 是 wreq-proto 的
+# 直接依赖，改不了配置，只能 `[patch.crates-io]`。
+http2 = { version = "=0.5.20" }
+thiserror.workspace = true
+bytes = "1"
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
+http = "1"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "net", "time", "sync", "macros", "io-util", "fs"] }
+flate2.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+md-5.workspace = true
+sha2.workspace = true
+# 测试里的本机 HTTPS 测量台（等价于 Python 的 n1cap，但不用装 Python / hpack）
+btls = { version = "=0.5.6" }

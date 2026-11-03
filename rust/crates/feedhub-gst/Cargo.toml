@@ -1,0 +1,22 @@
+[package]
+name = "feedhub-gst"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "桌面播放引擎（GStreamer 1.26 + VA-API 硬解）的独立 UniFFI crate"
+
+[lib]
+name = "feedhub_gst"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+feedhub-core.workspace = true
+uniffi.workspace = true
+flate2.workspace = true
+libc.workspace = true
+
+gstreamer = { version = "0.25.4", features = ["v1_18"] }
+gstreamer-app = { version = "0.25.2" }
+gstreamer-video = { version = "0.25.4" }
+glib = { version = "0.22" }
+libloading = { version = "0.8" }

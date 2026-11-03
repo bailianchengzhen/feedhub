@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 冷启动（H2）和 App 图标用的颜色。 -->
+<resources>
+    <!-- 启动窗口 / 启动画面的底色：和 Compose 浅色背景（Theme.kt 里 Light.background = #F6F7F9）一致，
+         这样冷启动第一帧不是纯白闪一下。深色那份在 values-night/colors.xml（#121417，= Dark.background）。 -->
+    <color name="window_background">#FFF6F7F9</color>
+    <!-- 自适应图标（mipmap-anydpi-v26/ic_launcher.xml）的底色：品牌蓝，和主色 #3B6EA8 一样 -->
+    <color name="ic_launcher_background">#FF3B6EA8</color>
+</resources>

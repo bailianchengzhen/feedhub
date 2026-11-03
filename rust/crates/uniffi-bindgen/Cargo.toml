@@ -1,0 +1,12 @@
+[package]
+name = "uniffi-bindgen"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+# 单独一个 crate，就为了 `uniffi/cli` 这个 feature 不落到 cdylib 上：
+# 同一个 package 里给 bin 开 feature，`cargo build` 会把 lib 也一起按那套 feature 重编一次，
+# 生成的 .so 会白胖几十 KB（里面多一份绑定生成器）。分开就没有这个问题。
+[dependencies]
+uniffi = { version = "=0.32.1", features = ["cli"] }

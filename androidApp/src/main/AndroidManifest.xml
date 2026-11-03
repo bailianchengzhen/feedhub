@@ -1,0 +1,64 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 安卓 APK 的清单：只有一个启动 Activity（MainActivity 的实现在 :app 的 androidMain 里）。 -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <!-- 接口请求和图片加载都要联网（这一阶段只用演示数据，一个请求也不发）。 -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <!-- 「从电脑同步」扫电脑上的二维码（CameraX；没有相机的设备也能装，靠"手动输入二维码内容"的 debug 入口 / 其它登录方式） -->
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
+
+    <!-- 「从电脑同步」要在局域网里用明文 HTTP 取**已经 AES-256-GCM 加过密**的一次性响应（密钥只在二维码里），
+         所以开 cleartext；App 里其它平台请求全是 HTTPS，不会因此多出明文外网请求。 -->
+    <application
+        android:name="feedhub.app.FeedhubApplication"
+        android:allowBackup="false"
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:label="@string/app_name"
+        android:supportsRtl="true"
+        android:usesCleartextTraffic="true"
+        android:theme="@style/Theme.Feedhub">
+        <!-- Baseline Profile：release 包也能被 shell 做 profile 采集
+             （macrobenchmark 生成器要用）。debug 包本来就是可调试的，这一条对 debug 无影响。 -->
+        <profileable
+            android:shell="true"
+            tools:targetApi="29" />
+        <!-- 演示数据开关：只有 `benchmark` 构建类型的 manifest placeholder 是 true，
+             release / debug 都是 false。MainActivity 的 isDemoRequested 读它 —— release 里带 demo extra
+             仍然一律无效（还要是可调试构建才行），见 feedhub.app.isDemoRequested。 -->
+        <meta-data
+            android:name="feedhub.demoBuild"
+            android:value="${feedhubDemoBuild}" />
+        <!-- 大图查看器「分享图片」：把 cache/share/ 里的一张图交给系统分享面板，
+             别的 App 只拿到这一个文件的临时读权限，不需要任何存储权限。 -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
+        <activity
+            android:name="feedhub.app.MainActivity"
+            android:exported="true"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden|uiMode"
+            android:theme="@style/Theme.Feedhub"
+            android:windowSoftInputMode="adjustResize">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+        <!-- ORT 1.31 的 AAR 自带一个 ContentProvider：App 一启动就加载 34 MB 的 libonnxruntime.so 并初始化
+             微软的 1DS 遥测（会联网上报）。我们不要任何第三方上报，启动也不该为向量模型付这个钱 → 整个删掉。 -->
+        <provider
+            android:name="ai.onnxruntime.TelemetryInitializer"
+            android:authorities="${applicationId}.onnxruntime_telemetry_initializer"
+            tools:node="remove" />
+    </application>
+</manifest>

@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 主题：界面全由 Compose 画，这里只要一个没有 ActionBar 的底子（不引 AppCompat / Material 组件库）。
+     深色模式由 App 里的设置控制（Compose 画的），和这个主题无关。
+     启动窗口的底色跟浅色 / 深色走（H2）：这里是浅色的一档，values-night 是深色的那一档，
+     values-v31 / values-night-v31 再加系统启动画面（Android 12+）的底色，冷启动不会白闪一下。 -->
+<resources>
+    <style name="Theme.Feedhub" parent="@android:style/Theme.Material.Light.NoActionBar">
+        <item name="android:windowBackground">@color/window_background</item>
+    </style>
+</resources>

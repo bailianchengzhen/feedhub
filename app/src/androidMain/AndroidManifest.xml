@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- app 的安卓清单片段（会合并进 :androidApp 的 APK 清单）。
+
+     MODIFY_AUDIO_SETTINGS（普通权限，安装时自动授予）：播放器音量跟系统媒体音量一致——
+     `AudioManager.setStreamVolume(STREAM_MUSIC, …)` / `getStreamVolume` 要它。没有这条，滑块和音量手势会抛
+     SecurityException（被我们 runCatching 吞掉，等于没声音可调）。 -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+
+    <!-- 本地向量走 NPU：Android 12+（API 31）起，App 要显式声明
+         才会被允许 dlopen 厂商的 native 库。QNN / Hexagon HTP 走 `libcdsprpc.so`（高通 DSP RPC），
+         没这条 QNN 直接报 INVALID_CONFIG。
+
+         `required="false"`：这是**可选**能力——没有这个库的设备（x86_64 模拟器、非高通机器）照常装、照常跑，
+         NPU 那条路自己回退 CPU。这一行在没有 NPU 模型的包里也是无害的（没人去 dlopen 它）。 -->
+    <application>
+        <uses-native-library
+            android:name="libcdsprpc.so"
+            android:required="false" />
+    </application>
+
+</manifest>

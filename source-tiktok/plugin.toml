@@ -1,0 +1,7 @@
+# 平台插件的构建期描述：settings.gradle.kts 按它生成注册表，./feedhub plugin add 也读它。
+# 运行期的描述（名字、颜色、能力、默认值、登录……）在 descriptor 指向的那个 Kotlin 常量里。
+
+# 平台 id：和描述里 Platform.define 的第一个参数一样，定了就别改
+id = "tiktok"
+# 插件描述（PlatformPlugin）的完整名字
+descriptor = "feedhub.source.tiktok.TiktokPlugin"

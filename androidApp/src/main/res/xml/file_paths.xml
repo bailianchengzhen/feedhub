@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 大图查看器「分享图片」用的临时文件：先写进 cache/share/，再经 FileProvider 交给
+     系统分享面板（别的 App 只拿到这一个文件的读权限）。 -->
+<paths>
+    <cache-path name="share" path="share/" />
+</paths>

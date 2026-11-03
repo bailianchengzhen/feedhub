@@ -1,0 +1,27 @@
+[package]
+name = "feedhub-ffi"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "feedhub-core 的 UniFFI 边界：给 Kotlin（桌面 JVM / 安卓 ART）调用的纯函数"
+
+[lib]
+name = "feedhub_ffi"
+# cdylib 给 JVM 用（UniFFI 生成的 Kotlin 绑定用 JNA 加载这一个 .so）；
+# rlib 给 uniffi-bindgen 的 `--library` 模式读元数据（也可以只读 cdylib）。
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+feedhub-core.workspace = true
+uniffi.workspace = true
+thiserror.workspace = true
+# **联网层**：这一条让 `feedhub-net` 被编进 `.so`（量体积 / 验交叉编译）。
+feedhub-net = { path = "../feedhub-net" }
+# 播放器决策层的 `PlayInfo` 入参（选流 / 清晰度菜单）走 JSON：一份可能几十条流，
+# 过 JSON 比过几十个 record 便宜，而且不用为"只读"再造一套 record。见 player.rs 的 parse_play_info。
+serde_json.workspace = true
+
+# `net_host.rs` 要把 URL 拆成"host / 编码后的 path / 是不是 https"交给 Cookie 罐，用 `http::Uri`
+# （就是 `feedhub-net` 里面那一份，同一个版本；`feedhub-net` 自己也是 workspace 里唯一声明它的 crate，
+# 这里显式写出来是为了不靠"传递依赖能用"这种运气）。
+http = "1"

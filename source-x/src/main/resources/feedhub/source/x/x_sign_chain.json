@@ -1,0 +1,9 @@
+{
+  "pagePaths": [
+    "/home",
+    "/"
+  ],
+  "entryPattern": "src=[\"'](https?://[^\"']+/(?:entry-client[\\w-]*|main\\.[\\w-]{6,})\\.js)[\"']",
+  "importerPattern": "[\"']([./\\w-]*(?:client-transaction-id-plugin|startup-dynamic|sentry-filter)-[\\w-]+\\.js)[\"']",
+  "signPattern": "[\"'`]([./\\w-]*sign\\.o-[\\w-]+\\.js)[\"'`]"
+}

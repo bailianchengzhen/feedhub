@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Android 12+（API 31）的系统启动画面（H2）：底色也用 window_background。
+     不写这一条时启动画面底色取 ?android:colorBackground，和 App 的浅色 / 深色对不上就会闪一下。 -->
+<resources>
+    <style name="Theme.Feedhub" parent="@android:style/Theme.Material.Light.NoActionBar">
+        <item name="android:windowBackground">@color/window_background</item>
+        <item name="android:windowSplashScreenBackground">@color/window_background</item>
+    </style>
+</resources>
