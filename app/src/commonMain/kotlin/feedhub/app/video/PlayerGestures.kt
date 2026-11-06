@@ -162,27 +162,12 @@ internal fun Modifier.playerTouchGestures(
             detectTapGestures(onTap = { onTap() }, onDoubleTap = { onDoubleTap() })
         }
         // 长按：用 afterLongPress 的拖动，手指一松就是 onDragEnd
-        .pointerInputUnit(Unit) {
-            var upTravel = 0f
-            var swiped = false
-            detectDragGesturesAfterLongPress(
-                onDragStart = {
-                    upTravel = 0f
-                    swiped = false
-                    onLongPressStart()
-                },
-                onDrag = { change, drag ->
-                    change.consume()
-                    upTravel += drag.y
-                    if (!swiped && upTravel <= -lockUpPx) {
-                        swiped = true
-                        onLongPressSwipeUp()
-                    }
-                },
-                onDragEnd = { onLongPressEnd() },
-                onDragCancel = { onLongPressEnd() },
-            )
-        }
+        .longPressSpeedGesture(
+            lockUpPx = lockUpPx,
+            onLongPressStart = onLongPressStart,
+            onLongPressSwipeUp = onLongPressSwipeUp,
+            onLongPressEnd = onLongPressEnd,
+        )
         // 普通拖动：横向进度 / 左侧亮度 / 右侧音量。这里自己写一圈而不直接用 detectDragGestures：
         // 那个一过触摸阈值就 consume，会把正在进行的"长按加速"顶掉（长按那边看到事件被消费就取消，倍速弹回去）。
         // 自己写就能先问 [isSpeedHeld]，长按在进行就把这一整场让给它。
@@ -239,6 +224,60 @@ internal fun Modifier.playerTouchGestures(
                 }
             }
         }
+}
+
+/** 长按加速 + 按着往上滑锁定 / 取消锁定（常规播放器与竖屏沉浸舞台共用）。 */
+private fun Modifier.longPressSpeedGesture(
+    lockUpPx: Float,
+    onLongPressStart: () -> Unit,
+    onLongPressSwipeUp: () -> Unit,
+    onLongPressEnd: () -> Unit,
+): Modifier = this.pointerInputUnit(lockUpPx) {
+    var upTravel = 0f
+    var swiped = false
+    detectDragGesturesAfterLongPress(
+        onDragStart = {
+            upTravel = 0f
+            swiped = false
+            onLongPressStart()
+        },
+        onDrag = { change, drag ->
+            change.consume()
+            upTravel += drag.y
+            if (!swiped && upTravel <= -lockUpPx) {
+                swiped = true
+                onLongPressSwipeUp()
+            }
+        },
+        onDragEnd = { onLongPressEnd() },
+        onDragCancel = { onLongPressEnd() },
+    )
+}
+
+/**
+ * 竖屏沉浸舞台的触屏手势：
+ * - **不挂双击**：`detectTapGestures` 只传 [onTap]，单击暂停 / 继续 **0ms 零延迟响应**，不再傻等 300ms 双击超时；
+ * - **不做全屏横滑拉进度**：屏幕中上部专心服务上下划页、单击暂停与长按 3 倍速，调进度归底部进度条热区；
+ * - 铺满整个沉浸舞台（含横屏 / 方视频的上下模糊留白区），点哪儿、按哪儿都有效。
+ */
+internal fun Modifier.immersionStageTouchGestures(
+    onTap: () -> Unit,
+    onLongPressStart: () -> Unit,
+    onLongPressSwipeUp: () -> Unit,
+    onLongPressEnd: () -> Unit,
+    density: Float,
+): Modifier {
+    val lockUpPx = PlayerGestureMath.LOCK_UP_DP * density
+    return this
+        .pointerInputUnit(onTap) {
+            detectTapGestures(onTap = { onTap() })
+        }
+        .longPressSpeedGesture(
+            lockUpPx = lockUpPx,
+            onLongPressStart = onLongPressStart,
+            onLongPressSwipeUp = onLongPressSwipeUp,
+            onLongPressEnd = onLongPressEnd,
+        )
 }
 
 /** `Modifier.pointerInput(keys)` 的短写法（这个文件里用得很多）。 */

@@ -14,9 +14,6 @@ val FeedGridPadding = 24.dp
 /** 双栏时右栏（详情）最窄多宽：拖分隔线时不让详情挤得比这还窄（窗口太窄放不下两头时让给左栏的"至少一张卡片"）。 */
 val MinDetailWidth = 480.dp
 
-/** 网格 → 双栏的过渡时长（毫秒）。左栏收窄、详情滑入、卡片滑到新位置都用这个，三样同时开始同时结束。 */
-const val PaneAnimMillis = 280
-
 /** 判"够不够放下 n 张"时的容差，单位是一张卡片宽：整数倍的宽度不会因为边距 / 浮点误差被向下取整成少一列。 */
 private const val FitEpsilon = 0.05f
 

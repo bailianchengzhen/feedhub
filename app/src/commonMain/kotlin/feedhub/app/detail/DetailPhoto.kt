@@ -18,6 +18,7 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import coil3.compose.AsyncImage
+import coil3.decode.DataSource
 import feedhub.app.feed.CardImageHint
 
 /** 缩略图 → 原图的淡入时长。 */
@@ -48,9 +49,10 @@ fun DetailPhoto(
     onLoadedSize: ((Size) -> Unit)? = null,
 ) {
     val boxColor = placeholderColor ?: MaterialTheme.colorScheme.surfaceVariant
-    // 换地址（原文 / 译文、原图开关）时重新等一次：新图从透明淡入，底下的缩略图一直在
+    // 换地址（原文 / 译文、原图开关）时重新等一次：新图从透明淡入，底下的缩略图一直在；已在内存缓存中的直接显示不重做淡入
     var loaded by remember(url) { mutableStateOf(false) }
-    val alpha by animateFloatAsState(if (loaded) 1f else 0f, tween(DETAIL_IMAGE_FADE_MS))
+    var fromMemory by remember(url) { mutableStateOf(false) }
+    val alpha by animateFloatAsState(if (loaded) 1f else 0f, tween(if (fromMemory) 0 else DETAIL_IMAGE_FADE_MS))
     // 时间线：这块图在不在组合里、原图到了没有。
     // 只在截图工具注册了探针时有用，正常界面就是两个 int 的加减（各一次）。
     DisposableEffect(Unit) {
@@ -76,6 +78,7 @@ fun DetailPhoto(
                 alignment = alignment,
                 onSuccess = { state ->
                     if (!loaded) DetailDebug.imagesLoaded++
+                    if (state.result.dataSource == DataSource.MEMORY_CACHE) fromMemory = true
                     loaded = true
                     onLoadedSize?.invoke(state.painter.intrinsicSize)
                 },

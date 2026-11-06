@@ -88,6 +88,7 @@ import androidx.compose.ui.window.PopupPositionProvider
 import androidx.compose.ui.window.PopupProperties
 import feedhub.app.AppGraph
 import feedhub.app.LocalDetailInRightPane
+import feedhub.app.LocalFullscreenDetailImmersive
 import feedhub.app.requestsLandscapeFullscreen
 import feedhub.app.detail.AdultHiddenDetail
 import feedhub.app.detail.CommentSortChips
@@ -170,14 +171,14 @@ fun VideoDetailScreen(graph: AppGraph, item: FeedItem, id: String, onClose: () -
     val languageTranslation = LocalTranslation.current
     // 沉浸播放预取到的那一条（上下滑切过来的）：详情一开始就有，省掉一次请求；切过去不白屏也靠它。
     val navigator = LocalDetailNavigator.current
-    val prefetched = remember(item) { navigator?.prefetcher?.readyFor(item) }
+    val prefetched = remember(item.key) { navigator?.prefetcher?.readyFor(item) }
     // **同一条内容第二次点开不重来一遍**：详情（视频这里是简介 + 分 P）进 DetailCache，
     // 命中时一进来就有——分 P / 简介 / 播放器位置第一次画就是最终的样子，不用先黑底 + 封面再换一遍。
     val cacheKey = remember(item.key) { DetailCache.itemKey(item) }
-    var detail: FeedDetail? by remember(item) { mutableStateOf(prefetched?.detail ?: DetailCache.get(cacheKey)) }
-    var loadError: String? by remember(item) { mutableStateOf(null) }
-    var reload by remember(item) { mutableStateOf(0) }
-    LaunchedEffect(id, reload) {
+    var detail: FeedDetail? by remember(item.key) { mutableStateOf(prefetched?.detail ?: DetailCache.get(cacheKey)) }
+    var loadError: String? by remember(item.key) { mutableStateOf(null) }
+    var reload by remember(item.key) { mutableStateOf(0) }
+    LaunchedEffect(item.key, id, reload) {
         // 预取到的详情（reload = 0）直接用，不再发一次；用户点「重试」时 reload 已经 +1，照常现取。
         // 缓存够新时也一样跳过（省一次往返）。
         if (reload == 0 && detail != null && DetailCache.isFresh(cacheKey)) return@LaunchedEffect
@@ -202,7 +203,7 @@ fun VideoDetailScreen(graph: AppGraph, item: FeedItem, id: String, onClose: () -
 
     // 详情（视频这里是简介）**已经加载出来**：用"标题 + 简介"重算这条的向量。
     // 只在详情真的到了之后调，不为了向量多发一个请求；简介只用来算向量，不存库。
-    LaunchedEffect(detail) {
+    LaunchedEffect(item.key, detail) {
         val loaded = detail ?: return@LaunchedEffect
         graph.onDetailLoaded(loaded.item, loaded.body.textOnly())
     }
@@ -210,7 +211,7 @@ fun VideoDetailScreen(graph: AppGraph, item: FeedItem, id: String, onClose: () -
     val language = item.language
     // 简介整条判定（标题 + 简介）：桌面上「点亮平台的自动翻」照旧（进详情就自动翻）；
     // 手机 / 没点亮的平台点了才翻。
-    val descriptionAuto = remember(d?.body, item.title, item.summary, language, item.platform, languageTranslation?.enabled, languageTranslation?.target) {
+    val descriptionAuto = remember(item.key, d?.body, item.title, item.summary, language, item.platform, languageTranslation?.enabled, languageTranslation?.target) {
         languageTranslation?.enabled == true &&
             languageTranslation.shouldAutoTranslate(
                 listOfNotNull(item.title, d?.body?.textOnly()).joinToString("\n").ifBlank { item.summary.orEmpty() },
@@ -220,19 +221,19 @@ fun VideoDetailScreen(graph: AppGraph, item: FeedItem, id: String, onClose: () -
     }
     // 简介那一行入口（整条视频一个）
     val descriptionTranslation = (d?.body ?: item.summary?.let { null })?.let {
-        rememberRichTextTranslation(it, descriptionAuto, language)
+        key(item.key) { rememberRichTextTranslation(it, descriptionAuto, language) }
     }
     // 平台在详情接口里才标的 18+（YouTube 年龄限制）：和从信息流直接打开同一条规则，只画一行、不加载播放
     if (d != null && detailHiddenAsAdult(d.item)) {
-        AdultHiddenDetail(onClose, modifier.fillMaxSize())
+        key(item.key) { AdultHiddenDetail(onClose, modifier.fillMaxSize()) }
         return
     }
     // 详情里没有可播放的视频（例如酷安里只是一条站外微博链接）：当图文帖看，视频以卡片的形式在正文里
     if (d != null && d.video == null) {
-        PostDetailScreen(graph, item, id, onClose, modifier)
+        key(item.key) { PostDetailScreen(graph, item, id, onClose, modifier) }
         return
     }
-    val session = remember(d) {
+    val session = remember(item.key, d) {
         d?.takeIf { it.video != null }?.let {
             PlaybackSession(
                 // 平台客户端：平台代理 / fail-closed / Referer / UA 都在里面，播放器经它取清单和分片
@@ -258,7 +259,7 @@ fun VideoDetailScreen(graph: AppGraph, item: FeedItem, id: String, onClose: () -
     }
     // 要登录才能播（现在只有 YouTube 的设备码登录）：错误下面给按钮直接打开，成功后重试这一条
     val deviceLogin = remember(source) { source as? DeviceCodeLoginSource }
-    var loginDialog by remember(item) { mutableStateOf(false) }
+    var loginDialog by remember(item.key) { mutableStateOf(false) }
     val onLogin: (() -> Unit)? = deviceLogin?.let { { loginDialog = true } }
     DisposableEffect(session) {
         session?.loadPart(session.initialPartIndex, resume = true)
@@ -280,7 +281,7 @@ fun VideoDetailScreen(graph: AppGraph, item: FeedItem, id: String, onClose: () -
         }
     }
 
-    val comments = remember(source, id) { CommentsState(source, id, scope, platforms = graph.platforms) }
+    val comments = remember(item.key, source, id) { CommentsState(source, id, scope, platforms = graph.platforms) }
     LaunchedEffect(comments) { comments.page.loadMore() }
     val shown = d?.item ?: item
     val poster = Poster(shown.author?.id ?: item.author?.id, posterLabel(shown, graph.platforms))
@@ -306,18 +307,18 @@ fun VideoDetailScreen(graph: AppGraph, item: FeedItem, id: String, onClose: () -
     // 放大 / 全屏和沉浸界面的评论面板放在 DetailHost 里：系统的返回键由 DetailPane 的
     // BackHandler → host.dismissTop() 处理，先退放大、再关评论面板，两次之后才关详情。
     // 不在 DetailPane 里（host 为 null，理论上没有）时退回本页局部状态，行为不变。
-    var zoomedLocal by remember { mutableStateOf(false) }
+    var zoomedLocal by remember(item.key) { mutableStateOf(false) }
     val zoomed = host?.playerZoomed ?: zoomedLocal
     val setZoomed: (Boolean) -> Unit = { v -> if (host == null) zoomedLocal = v else host.playerZoomed = v }
     val focus = remember { FocusRequester() }
-    LaunchedEffect(Unit) { runCatching { focus.requestFocus() } }
+    LaunchedEffect(item.key) { runCatching { focus.requestFocus() } }
     val danmaku = graph.settings.value.danmaku
     val onDanmakuChange: (DanmakuSettings) -> Unit = { v -> graph.settings.update { it.copy(danmaku = v) } }
     val onOpenReplies: (Comment) -> Unit = { host?.openReplies(it, poster, id) }
     val onOpenRelated: (FeedItem) -> Unit = { host?.openItem(it) }
     // 播放器下面那一列的滚动位置（"评论 / 相关推荐"标签贴上顶时要用）；沉浸界面用不到它。
     // 视频详情的顶栏**不跟滚动**，所以这里不再给顶栏算淡入。
-    val bodyListState = rememberLazyListState()
+    val bodyListState = key(item.key) { rememberLazyListState() }
 
     // ---------------- 沉浸界面（竖屏视频） ----------------
     val aspect = immersionAspect(
@@ -332,30 +333,42 @@ fun VideoDetailScreen(graph: AppGraph, item: FeedItem, id: String, onClose: () -
     // 沉浸界面里上下滑换到下一条**横屏**视频时还留在沉浸界面（[DetailNavigator.switched]）：
     // 那是"连续刷"的同一个会话，切过去就弹回普通详情页等于把连续刷打断了。
     val immersive = immersionStays(isPortraitVideo(aspect), navigator?.switched == true)
+    val reportFullscreenImmersive = LocalFullscreenDetailImmersive.current
+    SideEffect { reportFullscreenImmersive(immersive) }
+    DisposableEffect(reportFullscreenImmersive) {
+        onDispose { reportFullscreenImmersive(false) }
+    }
     // 上下切换的队列：来源列表里的视频条目（跳过图文 / 直播）；当前这条不在列表里就退化成只有它自己。
     // 队列现读列表（信息流 loadMore 之后跟着变长），所以这里每次组合都拿得到最新的下一条。
-    val queue = remember(item, navigator) {
+    val queue = remember(item.key, item, navigator) {
         navigator?.let { n -> ImmersionQueue({ n.items() }, item, { n.loadMore() }, { n.loadingMore() }) }
     }
     // 切换被挡下时的一句话（2 秒后自己消失）
-    var switchHint by remember(item) { mutableStateOf<String?>(null) }
+    var switchHint by remember(item.key) { mutableStateOf<String?>(null) }
     LaunchedEffect(switchHint) {
         if (switchHint != null) {
             delay(2_000)
             switchHint = null
         }
     }
-    val switch: (Int) -> Unit = { delta ->
+    val performSwitch: (Int, Boolean) -> Boolean = { delta, throttled ->
         when (val step = queue?.step(delta)) {
-            is ImmersionStep.Go -> navigator?.select(step.item)
-            is ImmersionStep.End -> switchHint = when {
-                !step.forward -> "已经是第一条了"
-                step.loading -> "正在加载更多…"
-                else -> "已经是最后一条了"
+            is ImmersionStep.Go -> navigator?.select(step.item, throttled = throttled) == true
+            is ImmersionStep.End -> {
+                switchHint = when {
+                    !step.forward -> "已经是第一条了"
+                    step.loading -> "正在加载更多…"
+                    else -> "已经是最后一条了"
+                }
+                false
             }
-            null -> switchHint = "这条不在信息流里，不能上下切换"
+            null -> {
+                switchHint = "这条不在信息流里，不能上下切换"
+                false
+            }
         }
     }
+    val switch: (Int) -> Unit = { delta -> performSwitch(delta, true) }
     // 只预取下一条：详情 + 播放地址（省请求、风控也温和）。**只在前台**（退到后台当场取消，什么都不留），
     // 只留一份（换目标就丢旧的，见 PlayPrefetcher）。
     val foreground = graph.foreground
@@ -401,7 +414,7 @@ fun VideoDetailScreen(graph: AppGraph, item: FeedItem, id: String, onClose: () -
         setZoomed(want)
     }
     // 沉浸界面的评论面板也放 DetailHost（和 zoomed 同一个层级，见上面）：返回键先关它
-    var commentsOpenLocal by remember { mutableStateOf(false) }
+    var commentsOpenLocal by remember(item.key) { mutableStateOf(false) }
     val commentsOpen = host?.playerCommentsOpen ?: commentsOpenLocal
     val setCommentsOpen: (Boolean) -> Unit = { v -> if (host == null) commentsOpenLocal = v else host.playerCommentsOpen = v }
     // 调音量时屏幕中间短暂显示音量值（↑↓ 和右边那个音量滑块都走这里）
@@ -497,6 +510,7 @@ fun VideoDetailScreen(graph: AppGraph, item: FeedItem, id: String, onClose: () -
                 volumeText = volumeText,
                 onLogin = onLogin,
                 onStep = switch,
+                onTouchStep = { delta -> performSwitch(delta, false) },
                 nextItem = nextItem,
                 previousItem = previousItem,
                 hint = switchHint,
@@ -504,72 +518,74 @@ fun VideoDetailScreen(graph: AppGraph, item: FeedItem, id: String, onClose: () -
                 modifier = Modifier.fillMaxSize(),
             )
         } else {
-        Column(Modifier.fillMaxSize()) {
-            DetailTopBar(
-                graph, item, onClose, loaded = d?.item,
-                // 视频详情：平台名**一进来就显示**。
-                // 窄屏顶栏原来跟着播放器下面那一列滚动淡入，视频页一打开顶上就是播放器、根本没滚过，等于一直不显示。
-                // 图文详情的窄屏顶栏照旧滚动淡入（PostDetailScreen 那边没动）。
-                titleAlpha = { 1f },
-            )
-            BoxWithConstraints(Modifier.weight(1f).fillMaxWidth()) {
-                val boxW = maxWidth
-                val boxH = maxHeight
-                val playerSlot: @Composable (Modifier) -> Unit = { m ->
-                    if (session != null && !zoomed) {
-                        // 窗口宽、高度又被 playerHeight 封了顶时，播放器（含弹幕、控件）保持 16:9 居中，两侧是黑边
-                        Box(m.background(Color.Black), contentAlignment = Alignment.Center) {
-                            PlayerView(
-                                session, danmaku, onDanmakuChange, zoomed = false, onToggleZoom = { toggleZoom(true) },
-                                modifier = Modifier.fillMaxHeight().aspectRatio(16f / 9f),
-                                poster = playerPoster(shown, d),
-                                posterPlaceholder = playerPoster(shown, d)?.let { cover ->
-                                    LocalDetailThumbnails.current.hint(cover)?.thumbnail
-                                },
-                                onLogin = onLogin,
-                            )
+            key(item.key) {
+                Column(Modifier.fillMaxSize()) {
+                    DetailTopBar(
+                        graph, item, onClose, loaded = d?.item,
+                        // 视频详情：平台名**一进来就显示**。
+                        // 窄屏顶栏原来跟着播放器下面那一列滚动淡入，视频页一打开顶上就是播放器、根本没滚过，等于一直不显示。
+                        // 图文详情的窄屏顶栏照旧滚动淡入（PostDetailScreen 那边没动）。
+                        titleAlpha = { 1f },
+                    )
+                    BoxWithConstraints(Modifier.weight(1f).fillMaxWidth()) {
+                        val boxW = maxWidth
+                        val boxH = maxHeight
+                        val playerSlot: @Composable (Modifier) -> Unit = { m ->
+                            if (session != null && !zoomed) {
+                                // 窗口宽、高度又被 playerHeight 封了顶时，播放器（含弹幕、控件）保持 16:9 居中，两侧是黑边
+                                Box(m.background(Color.Black), contentAlignment = Alignment.Center) {
+                                    PlayerView(
+                                        session, danmaku, onDanmakuChange, zoomed = false, onToggleZoom = { toggleZoom(true) },
+                                        modifier = Modifier.fillMaxHeight().aspectRatio(16f / 9f),
+                                        poster = playerPoster(shown, d),
+                                        posterPlaceholder = playerPoster(shown, d)?.let { cover ->
+                                            LocalDetailThumbnails.current.hint(cover)?.thumbnail
+                                        },
+                                        onLogin = onLogin,
+                                    )
+                                }
+                            } else {
+                                Box(m.background(Color.Black), contentAlignment = Alignment.Center) {
+                                    // 播放器还没建好（详情在飞）：先画卡片上已经下好的封面，别给一块黑屏 + 转圈
+                                    val cover = playerPoster(shown, d)
+                                    if (cover != null) {
+                                        DetailPhoto(
+                                            url = cover,
+                                            placeholder = LocalDetailThumbnails.current.hint(cover)?.thumbnail,
+                                            contentDescription = null,
+                                            contentScale = ContentScale.Fit,
+                                            placeholderColor = Color.Black,
+                                            modifier = Modifier.fillMaxSize(),
+                                        )
+                                    }
+                                    if (session == null && loadError == null) {
+                                        CircularProgressIndicator(Modifier.size(32.dp), color = Color.White, strokeWidth = 3.dp)
+                                    }
+                                }
+                            }
                         }
-                    } else {
-                        Box(m.background(Color.Black), contentAlignment = Alignment.Center) {
-                            // 播放器还没建好（详情在飞）：先画卡片上已经下好的封面，别给一块黑屏 + 转圈
-                            val cover = playerPoster(shown, d)
-                            if (cover != null) {
-                                DetailPhoto(
-                                    url = cover,
-                                    placeholder = LocalDetailThumbnails.current.hint(cover)?.thumbnail,
-                                    contentDescription = null,
-                                    contentScale = ContentScale.Fit,
-                                    placeholderColor = Color.Black,
-                                    modifier = Modifier.fillMaxSize(),
-                                )
-                            }
-                            if (session == null && loadError == null) {
-                                CircularProgressIndicator(Modifier.size(32.dp), color = Color.White, strokeWidth = 3.dp)
-                            }
+                        Column(Modifier.fillMaxSize()) {
+                            playerSlot(Modifier.fillMaxWidth().height(playerHeight(boxW, boxH)))
+                            VideoBody(
+                                graph = graph,
+                                item = shown,
+                                detail = d,
+                                loadError = loadError,
+                                onRetry = { reload++ },
+                                session = session,
+                                comments = comments,
+                                poster = poster,
+                                commentTotal = shown.stats.comments ?: item.stats.comments,
+                                onOpenReplies = onOpenReplies,
+                                onOpenRelated = onOpenRelated,
+                                descriptionTranslation = descriptionTranslation,
+                                listState = bodyListState,
+                                modifier = Modifier.weight(1f).fillMaxWidth(),
+                            )
                         }
                     }
                 }
-                Column(Modifier.fillMaxSize()) {
-                    playerSlot(Modifier.fillMaxWidth().height(playerHeight(boxW, boxH)))
-                    VideoBody(
-                        graph = graph,
-                        item = shown,
-                        detail = d,
-                        loadError = loadError,
-                        onRetry = { reload++ },
-                        session = session,
-                        comments = comments,
-                        poster = poster,
-                        commentTotal = shown.stats.comments ?: item.stats.comments,
-                        onOpenReplies = onOpenReplies,
-                        onOpenRelated = onOpenRelated,
-                        descriptionTranslation = descriptionTranslation,
-                        listState = bodyListState,
-                        modifier = Modifier.weight(1f).fillMaxWidth(),
-                    )
-                }
             }
-        }
         }
         // 放大：占满整个窗口。用不抢焦点的 Popup 盖在整个窗口上（所以返回键不被它吃掉，走页面 / DetailPane 那一层），
         // 键盘还是由页面处理。系统栏隐藏 + 横屏视频转横屏见 [FullscreenEffect]。

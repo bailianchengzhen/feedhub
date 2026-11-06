@@ -1,18 +1,22 @@
 package feedhub.app.video
 
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.animate
+import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
-import androidx.compose.animation.slideOutVertically
-import androidx.compose.animation.slideInVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.hoverable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsHoveredAsState
@@ -22,18 +26,24 @@ import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.VolumeOff
 import androidx.compose.material.icons.automirrored.filled.VolumeUp
@@ -41,10 +51,11 @@ import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Fullscreen
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Star
-import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.filled.Subtitles
 import androidx.compose.material.icons.filled.SubtitlesOff
+import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.outlined.Block
 import androidx.compose.material.icons.outlined.ChatBubbleOutline
 import androidx.compose.material.icons.outlined.Close
@@ -62,8 +73,13 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
@@ -73,32 +89,44 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.blur
-import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
+import androidx.compose.ui.input.nestedscroll.NestedScrollSource
+import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.PointerEventType
 import androidx.compose.ui.input.pointer.PointerIcon
 import androidx.compose.ui.input.pointer.pointerHoverIcon
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChange
+import androidx.compose.ui.input.pointer.util.VelocityTracker
+import androidx.compose.ui.input.pointer.util.addPointerInputChange
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.Velocity
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.lerp
 import androidx.compose.ui.unit.sp
 import coil3.compose.AsyncImage
-import kotlinx.coroutines.launch
 import feedhub.app.AppGraph
 import feedhub.app.detail.CommentSortChips
 import feedhub.app.detail.CommentsState
 import feedhub.app.detail.DetailDebug
 import feedhub.app.detail.DetailPhoto
+import feedhub.app.detail.DetailThumbnails
 import feedhub.app.detail.LocalDetailHost
 import feedhub.app.detail.LocalDetailThumbnails
 import feedhub.app.detail.Poster
@@ -115,30 +143,36 @@ import feedhub.core.FeedDetail
 import feedhub.core.FeedItem
 import feedhub.core.FollowSource
 import feedhub.core.Media
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlin.math.abs
+import kotlin.math.roundToInt
 
 private val Accent = Color(0xFFFB7299)
 private val OnVideo = Color.White
 
-/** 叠层（左下文字、右侧按钮）平时的透明度；鼠标在画面上时变清楚。 */
-private const val OverlayIdleAlpha = 0.72f
+/** 桌面端鼠标移开时叠层（左下文字、右侧按钮）的平时透明度；触屏端没有 hover，平时保持 1f 清晰可读。 */
+private const val DesktopOverlayIdleAlpha = 0.85f
+
+/** 窄屏半屏评论抽屉占容器高度的比例（上方 48% 留给视频完整缩放居中播放）。 */
+private const val HalfCommentsHeightFraction = 0.52f
+
+/** 长按倍速胶囊松手后停留多久。 */
+private const val SPEED_HINT_LINGER_MS = 900L
 
 /**
- * 竖屏视频的沉浸界面：**视频详情页的另一种样子**。
+ * 竖屏视频的沉浸界面（抖音 / TikTok 式）：**视频详情页的另一种样子**。
  * 尺寸跟着被给的地方走——双栏（平板横屏 / 桌面）时 [feedhub.app.SplitPane] 只给它右栏那么大，
  * 全屏打开方式 / 手机竖屏才占满整个窗口；评论面板也只在它里面滑出 / 升起，不盖到左栏去。
  *
- * 画面：竖屏按高度撑满、居中，两边用这条视频封面的模糊放大版铺底。左下角叠作者 / 标题（两行，点开全看）/
- * 发布时间，底边一条细进度条；右侧一竖排按钮（作者头像、**关注**（头像下面，平台不支持关注就不显示）、评论、
- * 收藏、分享、倍速、**音量**（点开一条竖向滑块）、B站的弹幕开关、**横屏全屏**（只有这一条视频本身是横屏时才出现））。
- * 点画面暂停 / 继续（暂停时中间一个播放键）；
- * 叠层平时半透明，鼠标在上面时变清楚。左上是返回，右上"⋯"里是屏蔽作者 / 弹幕设置（详情顶栏的那几项在
- * 沉浸界面里的去处）。
- *
- * **上下滑连续刷**：手指上下滑 / 滚轮 / ↑↓ / PageUp·PageDown 换来源列表里的
- * 上一条 / 下一条视频（队列和判定在 [ImmersionQueue]，键盘在 [videoKeyAction]，这里只报"要切哪一边"）。
- * 拖动时整块内容跟着手指走、底下先露出下一条的封面（"跟手"、不白屏），松手没滑够就弹回去。
- * **长按 3 倍速 / 上滑锁定**和常规详情页是同一份手势（[PlayerView]）；**从长按开始的这一整次触摸都归倍速**
- * （上滑锁定后松手保持倍速、不换视频），音量面板 / 进度条这类滑杆上的拖动也不归翻页。
+ *    松手结合速度（`VelocityTracker`）与距离判定，切页顺势滑出整屏，触屏连划不被滚轮节流吞掉；
+ * 2. **零延迟单击暂停 + 中央半透明播放标**：竖屏沉浸不挂双击放大（横屏片源走右侧专门的「横屏全屏」按钮），
+ *    单击暂停 / 继续 0ms 立即响应；暂停或播完停住时画面正中显示半透明 `▶`；
+ * 3. **全屏统一触控热区 + 底部进度条调进度**：单击暂停与长按 3 倍速（含上滑锁定）覆盖整个沉浸舞台（含横屏视频上下留白区）；
+ *    屏幕中上部取消全屏横滑拉进度，统一归底部进度条热区（横滑加粗轨道 + 大字时间预览 + 自动淡出叠层清屏，竖滑直通翻页）；
+ * 4. **半屏评论联动**：窄屏半屏评论升起时，视频平滑缩放到上半屏居中完整显示；点上方视频区直接收回评论弹窗（不暂停、不翻页）；
+ *    评论顶栏拖拽与列表到顶继续下拉均可跟手收回评论面板。
  */
 @Composable
 fun ImmersionScreen(
@@ -159,9 +193,11 @@ fun ImmersionScreen(
     volumeText: String?,
     /** "要登录才能播"时那个直接打开登录的按钮（见 [PlayerView]）；null = 这个平台没有能在这里打开的登录。 */
     onLogin: (() -> Unit)? = null,
-    /** 往上滑（+1 = 下一条）/ 往下滑（-1 = 上一条）。是不是真的能切、到没到尾部由 [VideoDetailScreen] 判（它手上有队列）。 */
+    /** 滚轮 / 键盘触发的上一条（-1）/ 下一条（+1），带节流。 */
     onStep: (Int) -> Unit = {},
-    /** 下一条 / 上一条的条目：拖动时在底下先露出它的封面（"跟手"、不白屏）。null = 没有那一条。 */
+    /** 触屏整屏划页松手结算触发的上一条 / 下一条（不走滚轮节流，返回是否真的切换成功）。 */
+    onTouchStep: (Int) -> Boolean = { delta -> onStep(delta); true },
+    /** 下一条 / 上一条的条目：拖动时紧挨在当前页下方 / 上方 1:1 露出完整预览。null = 没有那一条。 */
     nextItem: FeedItem? = null,
     previousItem: FeedItem? = null,
     /** 切换被挡下时的一句话（"已经是最后一条了" / "正在加载更多…" / "这条不在信息流里"），由外面自动消失。 */
@@ -171,25 +207,19 @@ fun ImmersionScreen(
     modifier: Modifier = Modifier,
 ) {
     // 性能记录：页面名临时盖成"沉浸"（退出沉浸就恢复成详情页，见 PerfScreen）
-    androidx.compose.runtime.DisposableEffect(Unit) {
+    DisposableEffect(Unit) {
         feedhub.app.perf.PerfHooks.overlay("沉浸")
         onDispose { feedhub.app.perf.PerfHooks.overlay(null) }
     }
     val host = LocalDetailHost.current
     val shown = detail?.item ?: item
     val ratio = immersionAspect(item, detail?.video, session?.info, session?.part, session?.state?.videoWidth ?: 0, session?.state?.videoHeight ?: 0)
-    val cover = item.media.filterIsInstance<Media.Video>().firstOrNull()?.cover
-        ?: shown.media.filterIsInstance<Media.Video>().firstOrNull()?.cover
-        ?: shown.media.filterIsInstance<Media.Image>().firstOrNull()?.url
-    // 封面的占位：卡片上已经下好的那张缩略图
+    val cover = itemCover(item, shown)
     val coverPlaceholder = cover?.let { c -> LocalDetailThumbnails.current.hint(c)?.thumbnail }
-    // 鼠标在画面上时叠层变清楚（平时半透明，不挡视频）
     val hoverSource = remember { MutableInteractionSource() }
     val hovered by hoverSource.collectIsHoveredAsState()
-    val overlayAlpha = if (hovered) 1f else OverlayIdleAlpha
     val contentId = (shown.detail as? DetailTarget.Native)?.id ?: shown.id
-    // 关注按钮：平台实现了 FollowSource 且详情给了关注状态才显示（[immersionFollowVisible]，测试测的就是这一个判断）。
-    // onMessage 走 rememberUpdatedState：host 换了也提示得到（对象存下来不会跟着重组换 lambda）。
+
     val followState = detail?.follow
     val followSource = graph.source(shown.platform) as? FollowSource
     val currentHost = rememberUpdatedState(host)
@@ -198,12 +228,38 @@ fun ImmersionScreen(
         if (!immersionFollowVisible(detail, followSource)) null
         else followState?.let { s -> followSource?.let { src -> ImmersionFollow(s, src, scope, onMessage = { currentHost.value?.showToast(it) }) } }
     }
-    // 音量滑块开着没有（点音量按钮开 / 再点或点别处收起）
-    var volumeOpen by remember { mutableStateOf(false) }
-    // "跟手"：手指竖着拖的时候整块内容跟着走（松手弹回 0；真的切过去了这个组合会被换掉）。按条目重置。
-    var drag by remember(item.key) { mutableStateOf(0f) }
+
+    var volumeOpen by remember(item.key) { mutableStateOf(false) }
+    // 底部进度条正在横向拖动时的比例（0~1）；非 null 时自动淡出文案与右侧按钮并显示大号时间预览
+    var scrubFraction by remember(item.key) { mutableStateOf<Float?>(null) }
+
+    // 舞台长按 3 倍速的顶部小胶囊提示
+    val speedPressing = session?.speedPressing == true
+    var speedHint by remember(item.key) { mutableStateOf<PlayerHint?>(null) }
+    var speedHintTick by remember(item.key) { mutableIntStateOf(0) }
+    LaunchedEffect(speedHintTick, speedPressing) {
+        if (speedHint == null || speedPressing) return@LaunchedEffect
+        delay(SPEED_HINT_LINGER_MS)
+        speedHint = null
+    }
+
+    // 整屏上下划页位移（像素，往下为正）：常驻不随 item.key 销毁，拖动阶段同步写浮点状态（零协程延迟），
+    // 且只在布局阶段 Modifier.offset 与绘制阶段 drawWithContent 里读取，划页全程零重组、零重测量。
+    var pageOffsetPx by remember { mutableFloatStateOf(0f) }
+    var pendingStep by remember { mutableIntStateOf(0) }
+    var isTouchDragging by remember { mutableStateOf(false) }
+    var settleJob by remember { mutableStateOf<Job?>(null) }
+    LaunchedEffect(item.key) {
+        if (!isTouchDragging && pendingStep == 0) {
+            settleJob?.cancel()
+            settleJob = null
+            pageOffsetPx = 0f
+        }
+    }
+
     val density = LocalDensity.current
-    // 截图工具（`open=immersion-volume` / `open=immersion-unfollow`）用的钩子
+    val haptic = LocalHapticFeedback.current
+
     SideEffect {
         DetailDebug.immersionVolume = { open -> volumeOpen = open; true }
         DetailDebug.immersionUnfollow = { follow?.click(); follow != null }
@@ -212,57 +268,218 @@ fun ImmersionScreen(
     BoxWithConstraints(modifier.fillMaxSize().clipToBounds().background(Color.Black)) {
         val paneW = maxWidth
         val paneH = maxHeight
-        val side = commentsOpen && immersionCommentsOnSide(paneW, paneH, ratio)
-        // 评论在右边滑出时视频往左让位：画面在剩下的那块地方里重新适配（还是居中）
-        val videoW = if (side) paneW - ImmersionCommentsPanelWidth else paneW
-        val videoSize = fitVideoSize(videoW, paneH, ratio)
-        // 横屏片源在竖屏里：画面上方那块空白（扣掉返回 / "⋯" 那一行）够高就把弹幕挪上去，不压画面
-        val danmakuBand = (paneH - videoSize.height) / 2 - ImmersionTopRow
+        // 评论摆哪边只看窗口与画面尺寸（不绑 commentsOpen，免得关闭动画期间从右栏跳到底栏）
+        val commentsOnSide = immersionCommentsOnSide(paneW, paneH, ratio)
+        val sideOpen = commentsOpen && commentsOnSide
+        val halfSheetOpen = commentsOpen && !commentsOnSide
+
+        // 窄屏半屏评论的展开进度（0 = 收起，1 = 完全展开）：点按钮开合与手指拖拽下拉共用同一个连续状态
+        val sheetProgress = remember(item.key) { Animatable(if (halfSheetOpen) 1f else 0f) }
+        LaunchedEffect(halfSheetOpen) {
+            val target = if (halfSheetOpen) 1f else 0f
+            sheetProgress.animateTo(target, animationSpec = tween(durationMillis = if (halfSheetOpen) 240 else 200, easing = FastOutSlowInEasing))
+        }
+        val sheetFraction = if (commentsOnSide) 0f else sheetProgress.value.coerceIn(0f, 1f)
+        val sheetHeight = paneH * HalfCommentsHeightFraction
+        val sheetHeightPx = with(density) { sheetHeight.toPx() }.coerceAtLeast(1f)
+
+        val videoW = if (sideOpen) paneW - ImmersionCommentsPanelWidth else paneW
+        // 半屏评论展开时，视频舞台平滑缩放到上半屏居中完整显示
+        val stageH = lerp(paneH, paneH - sheetHeight, sheetFraction)
+        val videoSize = fitVideoSize(videoW, stageH, ratio)
+
+        val danmakuBand = (stageH - videoSize.height) / 2 - if (sheetFraction < 0.2f) ImmersionTopRow else 8.dp
         val danmakuAbove = danmakuBand >= ImmersionDanmakuMinBand
-        val paneHeightPx = with(density) { paneH.toPx() }
-        val thresholdPx = with(density) { ImmersionSwipeThreshold.toPx() }
-        // 手指往上滑（drag < 0）= 下一条：底下先露出下一条的封面
-        val neighbor = if (drag < 0f) nextItem else previousItem
-        val neighborCover = neighbor?.let { n ->
-            n.media.filterIsInstance<Media.Video>().firstOrNull()?.cover
-                ?: n.media.filterIsInstance<Media.Image>().firstOrNull()?.url
-        }
-        // 没有那一条时只给一点点回弹（"到头了"的手感），不再整块跟着走
-        val dragFollow = if (neighbor == null) drag * 0.15f else immersionDragOffset(drag, paneHeightPx)
 
-        // 拖动时底下那一条：封面铺满 + 压暗（下一条的封面先垫着，切过去不白屏）
-        if (drag != 0f && neighbor != null) {
-            Box(Modifier.fillMaxSize().background(Color.Black)) {
-                if (neighborCover != null) {
-                    AsyncImage(
-                        model = neighborCover,
-                        contentDescription = null,
-                        contentScale = ContentScale.Crop,
-                        modifier = Modifier.fillMaxSize().graphicsLayer { scaleX = 1.05f; scaleY = 1.05f }.blur(12.dp),
-                    )
-                }
-                Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.35f)))
-            }
-        }
+        val paneHeightPx = with(density) { paneH.toPx() }.coerceAtLeast(1f)
+        val minFlingDistPx = with(density) { ImmersionFlingMinDistance.toPx() }
+        val flingVelPx = with(density) { ImmersionFlingVelocity.toPx() }
+        val maxSlowDragPx = with(density) { ImmersionSlowDragMax.toPx() }
 
+        // 拖进度条 / 长按倍速 / 半屏评论展开时自动把四周文案和按钮淡出清屏
+        val clearOverlays = scrubFraction != null || speedPressing
+        val baseOverlayAlpha = when {
+            clearOverlays -> 0f
+            isTouchDevice -> 1f
+            hovered -> 1f
+            else -> DesktopOverlayIdleAlpha
+        }
+        val animatedOverlayAlpha by animateFloatAsState(
+            targetValue = baseOverlayAlpha,
+            animationSpec = tween(durationMillis = 140),
+            label = "immersionOverlayAlpha",
+        )
+        val overlayAlpha = (animatedOverlayAlpha * (1f - sheetFraction * 2.2f).coerceIn(0f, 1f)).coerceIn(0f, 1f)
+
+        val currentNext by rememberUpdatedState(nextItem)
+        val currentPrev by rememberUpdatedState(previousItem)
+        val currentTouchStep by rememberUpdatedState(onTouchStep)
+        val currentStep by rememberUpdatedState(onStep)
+        val currentPaneHeightPx by rememberUpdatedState(paneHeightPx)
+        val currentMinFlingDistPx by rememberUpdatedState(minFlingDistPx)
+        val currentFlingVelPx by rememberUpdatedState(flingVelPx)
+        val currentMaxSlowDragPx by rememberUpdatedState(maxSlowDragPx)
+
+        // 外层静止视口承载整屏上下划手势：
+        // 内部相邻预览页与当前视频舞台均通过布局阶段 Modifier.offset { IntOffset(...) } 同步推进，
+        // 让 Android Media3 的 SurfaceView 硬件视频窗口坐标在 RenderThread 120Hz 紧锁页面不脱节。
         Box(
-            Modifier.fillMaxHeight().width(videoW).hoverable(hoverSource)
-                .graphicsLayer { translationY = dragFollow }
+            Modifier.width(videoW).fillMaxHeight().clipToBounds()
                 .immersionSwipes(
-                    thresholdPx = thresholdPx,
-                    paneHeightPx = paneHeightPx,
-                    onDrag = { dy -> drag = dy },
-                    onSettle = { dy ->
-                        val step = immersionSwipeStep(dy, thresholdPx)
-                        if (step != 0) onStep(step)
-                        // 弹回去（真的切过去了的话这个组合马上被换掉，动画跟着取消，看不到也不重要）
-                        scope.launch { animate(drag, 0f, animationSpec = tween(180)) { v, _ -> drag = v } }
+                    onDown = {
+                        isTouchDragging = true
+                        settleJob?.cancel()
+                        settleJob = null
+                        val commit = pendingStep
+                        if (commit != 0) {
+                            pendingStep = 0
+                            if (currentTouchStep(commit)) {
+                                pageOffsetPx = 0f
+                            }
+                        } else if (abs(pageOffsetPx) > 0.5f) {
+                            pageOffsetPx = 0f
+                        }
                     },
-                    onStep = onStep,
-                    suppressed = { session?.speedPressing == true },
+                    onDrag = { rawDy ->
+                        val hasNeighbor = if (rawDy < 0f) currentNext != null else if (rawDy > 0f) currentPrev != null else true
+                        pageOffsetPx = immersionDragOffset(rawDy, currentPaneHeightPx, hasNeighbor = hasNeighbor)
+                    },
+                    onSettle = { rawDy, velocityY ->
+                        isTouchDragging = false
+                        val hPx = currentPaneHeightPx
+                        val step = immersionSettleStep(
+                            dyPx = rawDy,
+                            velocityYPxPerSec = velocityY,
+                            paneHeightPx = hPx,
+                            minFlingDistancePx = currentMinFlingDistPx,
+                            flingVelocityPxPerSec = currentFlingVelPx,
+                            maxSlowDragPx = currentMaxSlowDragPx,
+                        )
+                        val targetNeighbor = when {
+                            step > 0 -> currentNext
+                            step < 0 -> currentPrev
+                            else -> null
+                        }
+                        when {
+                            step != 0 && targetNeighbor != null -> {
+                                pendingStep = step
+                                val endY = if (step > 0) -hPx else hPx
+                                val startY = pageOffsetPx
+                                val durationMs = pagerSettleDurationMs(endY - startY, velocityY, hPx)
+                                settleJob?.cancel()
+                                settleJob = scope.launch {
+                                    if (durationMs > 0) {
+                                        animate(
+                                            initialValue = startY,
+                                            targetValue = endY,
+                                            animationSpec = tween(durationMillis = durationMs, easing = PagerCubicOutEasing),
+                                        ) { v, _ -> pageOffsetPx = v }
+                                    } else {
+                                        pageOffsetPx = endY
+                                    }
+                                    if (pendingStep == step) {
+                                        pendingStep = 0
+                                        if (currentTouchStep(step)) {
+                                            pageOffsetPx = 0f
+                                        } else {
+                                            val backMs = pagerSettleDurationMs(pageOffsetPx, 0f, hPx)
+                                            if (backMs > 0) {
+                                                animate(
+                                                    initialValue = pageOffsetPx,
+                                                    targetValue = 0f,
+                                                    animationSpec = tween(durationMillis = backMs, easing = PagerCubicOutEasing),
+                                                ) { v, _ -> pageOffsetPx = v }
+                                            } else {
+                                                pageOffsetPx = 0f
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            step != 0 -> {
+                                // 到列表头 / 尾：触发提示与 loadMore，画面平滑弹回原位
+                                currentTouchStep(step)
+                                val startY = pageOffsetPx
+                                val durationMs = pagerSettleDurationMs(startY, velocityY, hPx)
+                                settleJob?.cancel()
+                                if (durationMs > 0) {
+                                    settleJob = scope.launch {
+                                        animate(
+                                            initialValue = startY,
+                                            targetValue = 0f,
+                                            animationSpec = tween(durationMillis = durationMs, easing = PagerCubicOutEasing),
+                                        ) { v, _ -> pageOffsetPx = v }
+                                    }
+                                } else {
+                                    pageOffsetPx = 0f
+                                }
+                            }
+                            else -> {
+                                val startY = pageOffsetPx
+                                val durationMs = pagerSettleDurationMs(startY, velocityY, hPx)
+                                settleJob?.cancel()
+                                if (durationMs > 0) {
+                                    settleJob = scope.launch {
+                                        animate(
+                                            initialValue = startY,
+                                            targetValue = 0f,
+                                            animationSpec = tween(durationMillis = durationMs, easing = PagerCubicOutEasing),
+                                        ) { v, _ -> pageOffsetPx = v }
+                                    }
+                                } else {
+                                    pageOffsetPx = 0f
+                                }
+                            }
+                        }
+                    },
+                    onAbort = { isTouchDragging = false },
+                    onWheelStep = { delta -> currentStep(delta) },
+                    suppressed = {
+                        session?.speedPressing == true || scrubFraction != null || halfSheetOpen || sheetFraction > 0.05f
+                    },
                 ),
         ) {
-            // 铺底：封面的模糊放大版（不是纯黑；抖音网页版就是这样）
+            if (nextItem != null) {
+                key("next", nextItem.key) {
+                    NeighborStagePreview(
+                        neighbor = nextItem,
+                        paneW = videoW,
+                        paneH = paneH,
+                        favorite = graph.library.isFavorite(nextItem.key),
+                        muted = session?.let { it.state.muted || it.state.volume == 0 } ?: AppVolume.muted,
+                        volume = session?.state?.volume ?: AppVolume.percent,
+                        modifier = Modifier
+                            .width(videoW)
+                            .fillMaxHeight()
+                            .offset { IntOffset(0, (currentPaneHeightPx + pageOffsetPx).roundToInt()) }
+                            .drawWithContent { if (pageOffsetPx < -0.5f) drawContent() },
+                    )
+                }
+            }
+            if (previousItem != null) {
+                key("prev", previousItem.key) {
+                    NeighborStagePreview(
+                        neighbor = previousItem,
+                        paneW = videoW,
+                        paneH = paneH,
+                        favorite = graph.library.isFavorite(previousItem.key),
+                        muted = session?.let { it.state.muted || it.state.volume == 0 } ?: AppVolume.muted,
+                        volume = session?.state?.volume ?: AppVolume.percent,
+                        modifier = Modifier
+                            .width(videoW)
+                            .fillMaxHeight()
+                            .offset { IntOffset(0, (-currentPaneHeightPx + pageOffsetPx).roundToInt()) }
+                            .drawWithContent { if (pageOffsetPx > 0.5f) drawContent() },
+                    )
+                }
+            }
+
+            // 当前视频舞台
+            Box(
+                Modifier.width(videoW).height(stageH).hoverable(hoverSource)
+                    .offset { IntOffset(0, pageOffsetPx.roundToInt()) },
+            ) {
+            // 1. 铺底：封面的模糊放大版
             if (cover != null) {
                 DetailPhoto(
                     url = cover,
@@ -275,20 +492,26 @@ fun ImmersionScreen(
             }
             Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.45f)))
 
-            // 画面：竖屏按高度撑满、居中（两边是模糊铺底）
+            // 2. 画面：按当前舞台高度适配居中（PlayerView 内部手势关闭，由第 5 层全舞台统一接管）
             Box(Modifier.align(Alignment.Center).size(videoSize)) {
                 when {
                     session != null && session.engine.unavailable == null ->
-                        // poster：首帧之前先垫这一条的封面
                         PlayerView(
-                            session, danmaku, onDanmakuChange, zoomed = false, onToggleZoom = onToggleZoom,
-                            modifier = Modifier.fillMaxSize(), controls = false, poster = cover, posterPlaceholder = coverPlaceholder, onLogin = onLogin,
+                            session = session,
+                            danmaku = danmaku,
+                            onDanmakuChange = onDanmakuChange,
+                            zoomed = false,
+                            onToggleZoom = onToggleZoom,
+                            modifier = Modifier.fillMaxSize(),
+                            controls = false,
+                            poster = cover,
+                            posterPlaceholder = coverPlaceholder,
+                            onLogin = onLogin,
                             drawDanmaku = !danmakuAbove,
+                            interactive = false,
+                            showCenterStatus = false,
                         )
-                    cover != null -> {
-                        // 播放器还不能放（引擎没装 / 详情还没回来）：先画这张封面（也就是测试帧），
-                        // 中间写明原因；详情加载失败的给「重试」（和常规详情页一样，不再只在角上留一行小字）。
-                        // 原图没下来之前先用卡片上的缩略图垫着
+                    cover != null ->
                         DetailPhoto(
                             url = cover,
                             placeholder = coverPlaceholder,
@@ -297,128 +520,255 @@ fun ImmersionScreen(
                             placeholderColor = Color.Black,
                             modifier = Modifier.fillMaxSize(),
                         )
-                        val note = session?.engine?.unavailable ?: loadError
-                        if (note != null) {
-                            Surface(
-                                shape = RoundedCornerShape(10.dp),
-                                color = Color.Black.copy(alpha = 0.62f),
-                                modifier = Modifier.align(Alignment.Center).padding(24.dp),
-                            ) {
-                                Column(
-                                    horizontalAlignment = Alignment.CenterHorizontally,
-                                    verticalArrangement = Arrangement.spacedBy(6.dp),
-                                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
-                                ) {
-                                    Text(note, color = OnVideo, fontSize = 13.sp)
-                                    if (onRetry != null) {
-                                        TextButton(onClick = onRetry) { Text("重试", color = Accent) }
-                                    }
-                                }
-                            }
-                        }
-                    }
                     else -> CircularProgressIndicator(Modifier.align(Alignment.Center).size(32.dp), color = OnVideo, strokeWidth = 3.dp)
                 }
             }
 
-            // 画面上方的弹幕带：底下是 Compose 画的模糊铺底、不是视频，所以走 Compose 那一份（onSurface = false，
-            // 安卓的 SurfaceView 弹幕会把铺底挖空，见 DanmakuLayer 的说明）。取弹幕还是 PlayerView 在跑。
+            // 3. 横屏片源画面上方的弹幕带
             val timeline = session?.danmakuTimeline
             if (danmakuAbove && session != null && session.danmakuOn && timeline != null && session.engine.unavailable == null && session.state.hasFrame) {
+                val topOffset = if (sheetFraction < 0.2f) ImmersionTopRow else 8.dp
                 Box(
-                    Modifier.align(Alignment.TopCenter).padding(top = ImmersionTopRow)
+                    Modifier.align(Alignment.TopCenter).padding(top = topOffset)
                         .size(videoSize.width, danmakuBand).clipToBounds(),
                 ) {
                     DanmakuLayer(timeline, session.state, danmaku, Modifier.fillMaxSize(), onSurface = false)
                 }
             }
 
-            // 上下两条渐变：顶部返回按钮、底部文字在上面看得清
-            Box(
-                Modifier.fillMaxWidth().height(96.dp).align(Alignment.TopCenter)
-                    .background(Brush.verticalGradient(listOf(Color.Black.copy(alpha = 0.55f), Color.Transparent))),
-            )
-            Box(
-                Modifier.fillMaxWidth().height(200.dp).align(Alignment.BottomCenter)
-                    .background(Brush.verticalGradient(listOf(Color.Transparent, Color.Black.copy(alpha = 0.65f)))),
-            )
+            // 4. 上下渐变遮罩（半屏评论展开时淡出，保持上半屏画面通透）
+            if (overlayAlpha > 0.01f) {
+                Box(
+                    Modifier.fillMaxWidth().height(96.dp).align(Alignment.TopCenter)
+                        .graphicsLayer { alpha = overlayAlpha }
+                        .background(Brush.verticalGradient(listOf(Color.Black.copy(alpha = 0.55f), Color.Transparent))),
+                )
+                Box(
+                    Modifier.fillMaxWidth().height(200.dp).align(Alignment.BottomCenter)
+                        .graphicsLayer { alpha = overlayAlpha }
+                        .background(Brush.verticalGradient(listOf(Color.Transparent, Color.Black.copy(alpha = 0.65f)))),
+                )
+            }
 
-            // 左上：返回（和双栏 / 全屏现有的关闭详情方式一样，Esc 也行）
-            IconButton(
-                onClick = onClose,
-                modifier = Modifier.align(Alignment.TopStart).padding(4.dp).graphicsLayer { alpha = overlayAlpha },
-            ) { Icon(Icons.AutoMirrored.Outlined.ArrowBack, contentDescription = "返回", tint = OnVideo) }
-
-            // 右上："⋯"——详情顶栏里的屏蔽作者 / 弹幕设置在沉浸界面里的去处（收藏 / 分享在右边那一列）。
-            // 没有作者也画（弹幕设置还要用），只是里面少一项。
-            run {
-                val author = shown.author
-                var menu by remember { mutableStateOf(false) }
-                Box(Modifier.align(Alignment.TopEnd).padding(4.dp).graphicsLayer { alpha = overlayAlpha }) {
-                    IconButton(onClick = { menu = true }) { Icon(Icons.Outlined.MoreVert, contentDescription = "更多", tint = OnVideo) }
-                    DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
-                        // 弹幕设置：常规详情页在触屏上是画面右上角一个按钮，沉浸界面右上角是"⋯"，
-                        // 就收在这里（面板还是同一个，弹幕开关在右侧按钮列里）
-                        if (session?.hasDanmaku == true) {
-                            DropdownMenuItem(
-                                text = { Text("弹幕设置") },
-                                leadingIcon = { Icon(Icons.Filled.Tune, contentDescription = null) },
-                                onClick = {
-                                    menu = false
-                                    session.danmakuPanelOpen = true
-                                    session.poke()
-                                },
-                            )
+            // 5. 全舞台统一交互层：
+            //    - 半屏评论展开时（用户明确要求）：点视频不触发暂停，直接收回评论弹窗；向下拖也可连带收起评论
+            //    - 平时：全屏范围（含上下模糊留白区）单击 0ms 零延迟暂停/继续 + 触屏长按 3 倍速与上滑锁定
+            if (halfSheetOpen) {
+                Box(
+                    Modifier.fillMaxSize()
+                        .pointerInput(onCommentsOpenChange) {
+                            detectTapGestures(onTap = { onCommentsOpenChange(false) })
                         }
-                        if (author != null) {
-                            DropdownMenuItem(
-                                text = { Text("屏蔽作者") },
-                                leadingIcon = { Icon(Icons.Outlined.Block, contentDescription = null) },
-                                onClick = {
-                                    menu = false
-                                    graph.library.block(author)
-                                    host?.closeAll() ?: onClose()
+                        .pointerInput(sheetHeightPx) {
+                            val vt = VelocityTracker()
+                            detectVerticalDragGestures(
+                                onDragStart = { vt.resetTracking() },
+                                onVerticalDrag = { change, dragAmount ->
+                                    vt.addPointerInputChange(change)
+                                    change.consume()
+                                    scope.launch {
+                                        sheetProgress.snapTo((sheetProgress.value - dragAmount / sheetHeightPx).coerceIn(0f, 1f))
+                                    }
+                                },
+                                onDragEnd = {
+                                    val vy = vt.calculateVelocity().y
+                                    val draggedPx = (1f - sheetProgress.value) * sheetHeightPx
+                                    if (commentSheetShouldDismiss(draggedPx, sheetHeightPx, vy, flingVelPx)) {
+                                        onCommentsOpenChange(false)
+                                    } else {
+                                        scope.launch { sheetProgress.animateTo(1f, tween(durationMillis = 200, easing = FastOutSlowInEasing)) }
+                                    }
+                                },
+                                onDragCancel = {
+                                    scope.launch { sheetProgress.animateTo(1f, tween(durationMillis = 200, easing = FastOutSlowInEasing)) }
                                 },
                             )
+                        },
+                )
+            } else {
+                val stageGesture = if (isTouchDevice) {
+                    Modifier.immersionStageTouchGestures(
+                        onTap = { session?.togglePlay() },
+                        onLongPressStart = {
+                            val s = session ?: return@immersionStageTouchGestures
+                            val wasLocked = s.speedLocked
+                            s.longPressStart()
+                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                            speedHint = if (wasLocked) {
+                                PlayerHint.Speed(s.baseSpeed, locked = false, note = "上滑取消锁定")
+                            } else {
+                                PlayerHint.Speed(PlayerGestureMath.LONG_PRESS_SPEED, locked = false, note = "上滑锁定")
+                            }
+                            speedHintTick++
+                        },
+                        onLongPressSwipeUp = {
+                            val s = session ?: return@immersionStageTouchGestures
+                            val locked = s.longPressSwipeUp()
+                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                            speedHint = if (locked) {
+                                PlayerHint.Speed(PlayerGestureMath.LONG_PRESS_SPEED, locked = true)
+                            } else {
+                                PlayerHint.Speed(s.baseSpeed, locked = false, note = "已取消锁定")
+                            }
+                            speedHintTick++
+                        },
+                        onLongPressEnd = {
+                            session?.longPressEnd()
+                            speedHintTick++
+                        },
+                        density = density.density,
+                    )
+                } else {
+                    // 桌面鼠标：单击零延迟暂停 / 继续，不挂双击放大
+                    Modifier.pointerInput(session) {
+                        detectTapGestures(onTap = { session?.togglePlay() })
+                    }
+                }
+                Box(stageGesture.fillMaxSize())
+            }
+
+            // 6. 中央状态层：暂停 / 播完时的半透明播放角标 + 缓冲圈 / 错误说明 / 登录与重试按钮 + 倍速顶部胶囊
+            val showPausedBadge = session != null && session.engine.unavailable == null &&
+                immersionPausedIndicatorVisible(
+                    playing = session.state.playing,
+                    buffering = session.state.buffering,
+                    loading = session.loading,
+                    hasFrame = session.state.hasFrame,
+                    ended = session.state.ended,
+                    hasError = session.error != null || session.state.error != null,
+                )
+            AnimatedVisibility(
+                visible = showPausedBadge,
+                enter = fadeIn(tween(120)),
+                exit = fadeOut(tween(120)),
+                modifier = Modifier.align(Alignment.Center),
+            ) {
+                Box(
+                    Modifier.size(60.dp).clip(CircleShape).background(Color.Black.copy(alpha = 0.36f)),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(
+                        Icons.Filled.PlayArrow,
+                        contentDescription = "继续播放",
+                        tint = Color.White.copy(alpha = 0.85f),
+                        modifier = Modifier.size(38.dp),
+                    )
+                }
+            }
+
+            if (session != null && session.engine.unavailable == null) {
+                CenterStatus(session, onLogin)
+            } else {
+                val note = session?.engine?.unavailable ?: loadError
+                if (note != null) {
+                    Surface(
+                        shape = RoundedCornerShape(10.dp),
+                        color = Color.Black.copy(alpha = 0.62f),
+                        modifier = Modifier.align(Alignment.Center).padding(24.dp),
+                    ) {
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(6.dp),
+                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
+                        ) {
+                            Text(note, color = OnVideo, fontSize = 13.sp)
+                            if (onRetry != null) {
+                                TextButton(onClick = onRetry) { Text("重试", color = Accent) }
+                            }
                         }
                     }
                 }
             }
+            PlayerHintOverlay(speedHint)
 
-            // 右侧一竖排按钮
-            ImmersionActions(
-                graph = graph,
-                item = shown,
-                session = session,
-                follow = follow,
-                commentsOpen = commentsOpen,
-                onComments = { onCommentsOpenChange(!commentsOpen) },
-                volumeOpen = volumeOpen,
-                onVolumeOpenChange = { volumeOpen = it },
-                // 横屏全屏按钮：只有这一条视频本身是横屏（宽 > 高）才给，见 isLandscapeVideo
-                landscape = isLandscapeVideo(ratio),
-                onFullscreen = onToggleZoom,
-                overlayAlpha = overlayAlpha,
-                modifier = Modifier.align(Alignment.BottomEnd).padding(end = 6.dp, bottom = 64.dp),
-            )
+            // 7. 顶栏、右侧按钮列、左下作者文案（半屏评论展开时隐藏，拖进度/长按倍速时自动淡出清屏）
+            if (!halfSheetOpen && sheetFraction < 0.45f) {
+                IconButton(
+                    onClick = onClose,
+                    modifier = Modifier.align(Alignment.TopStart).padding(4.dp).graphicsLayer { alpha = overlayAlpha },
+                ) { Icon(Icons.AutoMirrored.Outlined.ArrowBack, contentDescription = "返回", tint = OnVideo) }
 
-            // 左下：作者 + 标题 / 文案 + 发布时间
-            ImmersionInfo(
-                item = shown,
-                overlayAlpha = overlayAlpha,
-                modifier = Modifier.align(Alignment.BottomStart).padding(start = 14.dp, end = 76.dp, bottom = 24.dp),
-            )
+                run {
+                    val author = shown.author
+                    var menu by remember { mutableStateOf(false) }
+                    Box(Modifier.align(Alignment.TopEnd).padding(4.dp).graphicsLayer { alpha = overlayAlpha }) {
+                        IconButton(onClick = { menu = true }) { Icon(Icons.Outlined.MoreVert, contentDescription = "更多", tint = OnVideo) }
+                        DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+                            if (session?.hasDanmaku == true) {
+                                DropdownMenuItem(
+                                    text = { Text("弹幕设置") },
+                                    leadingIcon = { Icon(Icons.Filled.Tune, contentDescription = null) },
+                                    onClick = {
+                                        menu = false
+                                        session.danmakuPanelOpen = true
+                                        session.poke()
+                                    },
+                                )
+                            }
+                            if (author != null) {
+                                DropdownMenuItem(
+                                    text = { Text("屏蔽作者") },
+                                    leadingIcon = { Icon(Icons.Outlined.Block, contentDescription = null) },
+                                    onClick = {
+                                        menu = false
+                                        graph.library.block(author)
+                                        host?.closeAll() ?: onClose()
+                                    },
+                                )
+                            }
+                        }
+                    }
+                }
 
-            // 底边一条细进度条
-            if (session != null && session.engine.unavailable == null) {
+                ImmersionActions(
+                    graph = graph,
+                    item = shown,
+                    session = session,
+                    follow = follow,
+                    commentsOpen = commentsOpen,
+                    onComments = { onCommentsOpenChange(!commentsOpen) },
+                    volumeOpen = volumeOpen,
+                    onVolumeOpenChange = { volumeOpen = it },
+                    landscape = isLandscapeVideo(ratio),
+                    onFullscreen = onToggleZoom,
+                    overlayAlpha = overlayAlpha,
+                    modifier = Modifier.align(Alignment.BottomEnd).padding(end = 6.dp, bottom = 64.dp),
+                )
+
+                ImmersionInfo(
+                    item = shown,
+                    overlayAlpha = overlayAlpha,
+                    interactive = !clearOverlays,
+                    modifier = Modifier.align(Alignment.BottomStart).padding(start = 14.dp, end = 76.dp, bottom = 26.dp),
+                )
+            }
+
+            // 8. 底部进度条拖动时的大号时间预览（"01:24 / 04:10"，清屏后居中悬在进度条上方，手指不挡）
+            val activeScrub = scrubFraction
+            if (activeScrub != null && session != null && session.state.durationMs > 0) {
+                val totalMs = session.state.durationMs
+                val targetMs = (activeScrub * totalMs).toLong().coerceIn(0L, totalMs)
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 52.dp)
+                        .background(Color.Black.copy(alpha = 0.55f), RoundedCornerShape(50))
+                        .padding(horizontal = 16.dp, vertical = 6.dp),
+                ) {
+                    Text(clock(targetMs), color = OnVideo, fontSize = 20.sp, fontWeight = FontWeight.SemiBold)
+                    Text("  /  ${clock(totalMs)}", color = OnVideo.copy(alpha = 0.65f), fontSize = 18.sp, fontWeight = FontWeight.Medium)
+                }
+            }
+
+            // 9. 底边进度条（横向拖动调进度、点按跳转、竖滑放行给外层切视频）
+            if (session != null && session.engine.unavailable == null && !halfSheetOpen && sheetFraction < 0.45f) {
                 ImmersionProgress(
-                    session,
+                    session = session,
+                    onScrubFractionChange = { scrubFraction = it },
                     modifier = Modifier.align(Alignment.BottomCenter).fillMaxWidth().padding(horizontal = 10.dp),
                 )
             }
 
-            // 切换被挡下时的一句话（已经是最后一条了 / 正在加载更多… / 这条不在信息流里）：和音量提示同一个位置，
-            // 音量正在显示时让音量优先（那一下用户更关心音量）
+            // 10. 边界提示 / 音量中央短提示 / 竖向音量面板
             if (hint != null && volumeText == null) {
                 Surface(
                     shape = RoundedCornerShape(50),
@@ -429,7 +779,6 @@ fun ImmersionScreen(
                 }
             }
 
-            // 调音量时画面中间短暂显示音量值（↑↓ / M 走过这里；滑块自己显示在面板上）
             if (volumeText != null) {
                 Surface(
                     shape = RoundedCornerShape(50),
@@ -440,9 +789,7 @@ fun ImmersionScreen(
                 }
             }
 
-            // 音量滑块：点音量按钮开（也可以让滑块自己开，见上面的 DetailDebug 钩子）。画在最上面，
-            // 下面先铺一层"点别处收起"的透明遮罩——它挡在画面和其他按钮之上，所以点哪儿（包括音量按钮自己）都先收起。
-            if (volumeOpen && session != null && session.engine.unavailable == null) {
+            if (volumeOpen && session != null && session.engine.unavailable == null && !halfSheetOpen) {
                 Box(Modifier.fillMaxSize().immersionClickable { volumeOpen = false })
                 VolumePanel(
                     volume = session.state.volume,
@@ -452,10 +799,11 @@ fun ImmersionScreen(
                     modifier = Modifier.align(Alignment.CenterEnd).padding(end = VolumePanelEndPadding),
                 )
             }
+            }
         }
 
-        // 评论：右栏够宽就从右边滑出（视频已经往左让位），不够宽就从底下升起半屏
-        if (side) {
+        // 评论面板：宽屏从右侧滑出；窄屏从底部升起半屏并支持顶栏下拉与列表到顶继续下拉跟手收回
+        if (commentsOnSide) {
             AnimatedVisibility(
                 visible = commentsOpen,
                 enter = slideInHorizontally { it } + fadeIn(),
@@ -466,28 +814,157 @@ fun ImmersionScreen(
                     comments = comments,
                     poster = poster,
                     total = shown.stats.comments,
+                    bottomSheet = false,
                     onOpenReplies = { host?.openReplies(it, poster, contentId) },
                     onClose = { onCommentsOpenChange(false) },
                     modifier = Modifier.width(ImmersionCommentsPanelWidth).fillMaxHeight(),
                 )
             }
-        } else {
-            AnimatedVisibility(
-                visible = commentsOpen,
-                enter = slideInVertically { it } + fadeIn(),
-                exit = slideOutVertically { it } + fadeOut(),
-                modifier = Modifier.align(Alignment.BottomCenter),
-            ) {
-                ImmersionComments(
-                    comments = comments,
-                    poster = poster,
-                    total = shown.stats.comments,
-                    onOpenReplies = { host?.openReplies(it, poster, contentId) },
-                    onClose = { onCommentsOpenChange(false) },
-                    modifier = Modifier.fillMaxWidth().height(paneH * 0.5f),
-                )
+        } else if (halfSheetOpen || sheetFraction > 0.001f) {
+            ImmersionComments(
+                comments = comments,
+                poster = poster,
+                total = shown.stats.comments,
+                bottomSheet = true,
+                onOpenReplies = { host?.openReplies(it, poster, contentId) },
+                onClose = { onCommentsOpenChange(false) },
+                onSheetDragDelta = { dy ->
+                    scope.launch {
+                        sheetProgress.snapTo((sheetProgress.value - dy / sheetHeightPx).coerceIn(0f, 1f))
+                    }
+                },
+                onSheetDragSettle = { vy ->
+                    val draggedPx = (1f - sheetProgress.value) * sheetHeightPx
+                    if (commentSheetShouldDismiss(draggedPx, sheetHeightPx, vy, flingVelPx)) {
+                        onCommentsOpenChange(false)
+                    } else {
+                        scope.launch { sheetProgress.animateTo(1f, tween(durationMillis = 200, easing = FastOutSlowInEasing)) }
+                    }
+                },
+                currentDragPx = { (1f - sheetProgress.value) * sheetHeightPx },
+                modifier = Modifier.align(Alignment.BottomCenter).fillMaxWidth().height(sheetHeight)
+                    .graphicsLayer { translationY = sheetHeightPx * (1f - sheetFraction) },
+            )
+        }
+    }
+}
+
+private fun itemCover(primary: FeedItem, fallback: FeedItem = primary): String? =
+    primary.media.filterIsInstance<Media.Video>().firstOrNull()?.cover
+        ?: fallback.media.filterIsInstance<Media.Video>().firstOrNull()?.cover
+        ?: fallback.media.filterIsInstance<Media.Image>().firstOrNull()?.url
+
+/**
+ * 相邻上一条 / 下一条视频在 1:1 跟手推移期间的整屏预览页：版式与真进入该条时的首帧一致
+ * （模糊封面铺底 + 居中清晰等比封面 + 上下渐变 + 顶栏与右侧操作列 + 左下角作者标题），
+ * 直接用 [AsyncImage] 预解码进 Coil 内存缓存（不污染 `DetailDebug.imagesTotal`），滑到位松手切换时零跳变、零闪跳。
+ */
+@Composable
+private fun NeighborStagePreview(
+    neighbor: FeedItem,
+    paneW: Dp,
+    paneH: Dp,
+    favorite: Boolean,
+    muted: Boolean,
+    volume: Int,
+    modifier: Modifier = Modifier,
+) {
+    val cover = itemCover(neighbor)
+    val thumbs = remember(neighbor.key) { DetailThumbnails.of(neighbor.key) }
+    val placeholder = cover?.let { thumbs.hint(it)?.thumbnail }
+    val ratio = immersionAspect(neighbor)
+    val videoSize = fitVideoSize(paneW, paneH, ratio)
+
+    Box(modifier.clipToBounds().background(Color.Black)) {
+        if (cover != null) {
+            val bgModifier = Modifier.fillMaxSize().graphicsLayer { scaleX = 1.15f; scaleY = 1.15f }.blur(32.dp)
+            if (placeholder != null && placeholder != cover) {
+                AsyncImage(model = placeholder, contentDescription = null, contentScale = ContentScale.Crop, modifier = bgModifier)
+            }
+            AsyncImage(model = cover, contentDescription = null, contentScale = ContentScale.Crop, modifier = bgModifier)
+        }
+        Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.45f)))
+        if (cover != null) {
+            Box(Modifier.align(Alignment.Center).size(videoSize)) {
+                if (placeholder != null && placeholder != cover) {
+                    AsyncImage(model = placeholder, contentDescription = null, contentScale = ContentScale.Fit, modifier = Modifier.fillMaxSize())
+                }
+                AsyncImage(model = cover, contentDescription = null, contentScale = ContentScale.Fit, modifier = Modifier.fillMaxSize())
             }
         }
+        Box(
+            Modifier.fillMaxWidth().height(96.dp).align(Alignment.TopCenter)
+                .background(Brush.verticalGradient(listOf(Color.Black.copy(alpha = 0.55f), Color.Transparent))),
+        )
+        Box(
+            Modifier.fillMaxWidth().height(200.dp).align(Alignment.BottomCenter)
+                .background(Brush.verticalGradient(listOf(Color.Transparent, Color.Black.copy(alpha = 0.65f)))),
+        )
+        Box(Modifier.align(Alignment.TopStart).padding(4.dp).size(48.dp), contentAlignment = Alignment.Center) {
+            Icon(Icons.AutoMirrored.Outlined.ArrowBack, contentDescription = null, tint = OnVideo)
+        }
+        Box(Modifier.align(Alignment.TopEnd).padding(4.dp).size(48.dp), contentAlignment = Alignment.Center) {
+            Icon(Icons.Outlined.MoreVert, contentDescription = null, tint = OnVideo)
+        }
+        NeighborActionsPreview(
+            item = neighbor,
+            favorite = favorite,
+            muted = muted,
+            volume = volume,
+            landscape = isLandscapeVideo(ratio),
+            modifier = Modifier.align(Alignment.BottomEnd).padding(end = 6.dp, bottom = 64.dp),
+        )
+        ImmersionInfo(
+            item = neighbor,
+            overlayAlpha = 1f,
+            interactive = false,
+            modifier = Modifier.align(Alignment.BottomStart).padding(start = 14.dp, end = 76.dp, bottom = 26.dp),
+        )
+    }
+}
+
+@Composable
+private fun NeighborActionsPreview(
+    item: FeedItem,
+    favorite: Boolean,
+    muted: Boolean,
+    volume: Int,
+    landscape: Boolean,
+    modifier: Modifier = Modifier,
+) {
+    Column(
+        modifier = modifier,
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(14.dp),
+    ) {
+        item.author?.let { Avatar(it.avatar, 42) }
+        PreviewActionPill(Icons.Outlined.ChatBubbleOutline, item.stats.comments?.let(::compactCount))
+        PreviewActionPill(if (favorite) Icons.Filled.Star else Icons.Outlined.StarBorder, null, tint = if (favorite) Accent else OnVideo)
+        PreviewActionPill(Icons.Outlined.Share, null)
+        PreviewActionPill(null, PlaybackSpeed.label(PlaybackSpeed.DEFAULT))
+        PreviewActionPill(
+            if (muted) Icons.AutoMirrored.Filled.VolumeOff else Icons.AutoMirrored.Filled.VolumeUp,
+            if (muted) "静音" else "$volume%",
+            tint = if (muted) OnVideo.copy(alpha = 0.75f) else OnVideo,
+        )
+        if (landscape) PreviewActionPill(Icons.Filled.Fullscreen, null)
+    }
+}
+
+@Composable
+private fun PreviewActionPill(icon: ImageVector?, label: String?, tint: Color = OnVideo) {
+    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+        Box(
+            Modifier.size(48.dp).clip(CircleShape).background(Color.Black.copy(alpha = 0.32f)),
+            contentAlignment = Alignment.Center,
+        ) {
+            if (icon != null) {
+                Icon(icon, contentDescription = null, tint = tint, modifier = Modifier.size(26.dp))
+            } else if (label != null) {
+                Text(label, color = tint, fontSize = 13.sp, fontWeight = FontWeight.Medium)
+            }
+        }
+        if (icon != null && label != null) Text(label, color = OnVideo, fontSize = 11.sp)
     }
 }
 
@@ -503,9 +980,7 @@ private fun ImmersionActions(
     onComments: () -> Unit,
     volumeOpen: Boolean,
     onVolumeOpenChange: (Boolean) -> Unit,
-    /** 这条视频是不是横屏（宽 > 高）：是才给"横屏全屏"按钮（竖视频放大没有意义，见 [isLandscapeVideo]）。 */
     landscape: Boolean,
-    /** "横屏全屏"：走常规播放器那套放大 / 全屏（安卓转横屏、桌面铺满窗口），复用 `ImmersionScreen` 的 `onToggleZoom`。 */
     onFullscreen: () -> Unit,
     overlayAlpha: Float,
     modifier: Modifier = Modifier,
@@ -519,11 +994,9 @@ private fun ImmersionActions(
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
-        // 作者头像（和左下角的名字一样，点了去作者主页）
         if (author != null) {
             Box(Modifier.immersionClickable { author.url?.let { host?.openLink(it, null) } }) { Avatar(author.avatar, 42) }
         }
-        // 关注。平台不支持关注 / 详情没给状态就没有这个按钮。
         if (follow != null) FollowButton(follow)
         ActionButton(
             icon = Icons.Outlined.ChatBubbleOutline,
@@ -554,7 +1027,6 @@ private fun ImmersionActions(
                 item.url?.let { host?.copy(shareText(shareTitle(item), it), "已复制标题和链接") }
             },
         )
-        // 倍速：和播放器里的是同一份（0.5~3 倍）
         Box {
             ActionButton(
                 icon = null,
@@ -567,7 +1039,6 @@ private fun ImmersionActions(
                 session?.setSpeed(s)
             }
         }
-        // 音量：点开一条竖向滑块（再点 / 点别处收起）；静音或 0 时图标不一样。音量还是全 App 共用那一份。
         if (session != null && session.engine.unavailable == null) {
             val muted = session.state.muted || session.state.volume == 0
             ActionButton(
@@ -578,7 +1049,6 @@ private fun ImmersionActions(
                 onClick = { onVolumeOpenChange(!volumeOpen) },
             )
         }
-        // B站有弹幕（别的平台没有，不给这个按钮）
         if (session?.hasDanmaku == true) {
             ActionButton(
                 icon = if (session.danmakuOn) Icons.Filled.Subtitles else Icons.Filled.SubtitlesOff,
@@ -591,19 +1061,12 @@ private fun ImmersionActions(
                 },
             )
         }
-        // 横屏全屏：沉浸界面是按竖屏视频排的，上下滑过来的横屏视频按宽度适配、上下留白，
-        // 给一个按钮进常规播放器那套全屏。**只有这条视频本身是横屏才画**（竖屏 / 正方形 / 尺寸不知道都不画）。
         if (landscape) {
             ActionButton(icon = Icons.Filled.Fullscreen, label = null, description = "横屏全屏", onClick = onFullscreen)
         }
     }
 }
 
-/**
- * 关注按钮：放在作者头像正下面。
- * 未关注是一个主色圆底的"+"（抖音那种），已关注换成对勾 + "已关注"；点了已关注的按钮只是弹确认框
- * （取关是写操作，界面里那个 [ConfirmDialog] 确认了才真调接口）。
- */
 @Composable
 private fun FollowButton(follow: ImmersionFollow) {
     val following = follow.following == true
@@ -636,7 +1099,6 @@ private fun FollowButton(follow: ImmersionFollow) {
     }
 }
 
-/** 右侧一竖排里的一个按钮：半透明圆底 + 图标（或文字）+ 下面一行小字。 */
 @Composable
 private fun ActionButton(
     icon: ImageVector?,
@@ -647,7 +1109,7 @@ private fun ActionButton(
 ) {
     Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.immersionClickable(onClick)) {
         Box(
-            Modifier.size(48.dp).clip(CircleShape).background(Color.Black.copy(alpha = 0.32f)), // 触控热区 ≥48dp（E7）
+            Modifier.size(48.dp).clip(CircleShape).background(Color.Black.copy(alpha = 0.32f)),
             contentAlignment = Alignment.Center,
         ) {
             if (icon != null) {
@@ -663,7 +1125,12 @@ private fun ActionButton(
 // ---------------------------------------------------------------- 左下角的信息
 
 @Composable
-private fun ImmersionInfo(item: FeedItem, overlayAlpha: Float, modifier: Modifier = Modifier) {
+private fun ImmersionInfo(
+    item: FeedItem,
+    overlayAlpha: Float,
+    interactive: Boolean = true,
+    modifier: Modifier = Modifier,
+) {
     val host = LocalDetailHost.current
     val author = item.author
     val title = item.title?.takeIf { it.isNotBlank() } ?: item.summary?.takeIf { it.isNotBlank() }
@@ -678,74 +1145,261 @@ private fun ImmersionInfo(item: FeedItem, overlayAlpha: Float, modifier: Modifie
                 fontWeight = FontWeight.SemiBold,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
-                modifier = Modifier
-                    .pointerHoverIcon(PointerIcon.Hand)
-                    .clickable { author?.url?.let { host?.openLink(it, null) } },
+                modifier = if (interactive) {
+                    Modifier.pointerHoverIcon(PointerIcon.Hand).clickable { author?.url?.let { host?.openLink(it, null) } }
+                } else {
+                    Modifier
+                },
             )
         }
         if (title != null) {
-            Text(
-                title,
-                color = OnVideo,
-                fontSize = 14.sp,
-                maxLines = if (expanded) 12 else 2,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.widthIn(max = 460.dp).pointerHoverIcon(PointerIcon.Hand).clickable { expanded = !expanded },
-            )
+            if (expanded && interactive) {
+                // 展开的长文案支持内部滚动，并吃掉拖动/滚轮，不会一边读文案一边把视频划走
+                Box(
+                    Modifier.widthIn(max = 460.dp).heightIn(max = 180.dp)
+                        .swallowsDragsAndWheel()
+                        .verticalScroll(rememberScrollState())
+                        .pointerHoverIcon(PointerIcon.Hand)
+                        .clickable { expanded = false },
+                ) {
+                    Text(title, color = OnVideo, fontSize = 14.sp)
+                }
+            } else {
+                Text(
+                    title,
+                    color = OnVideo,
+                    fontSize = 14.sp,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.widthIn(max = 460.dp).let { m ->
+                        if (interactive) m.pointerHoverIcon(PointerIcon.Hand).clickable { expanded = true } else m
+                    },
+                )
+            }
         }
         item.publishedAt?.let { Text(fullTime(it), color = OnVideo.copy(alpha = 0.75f), fontSize = 11.sp) }
     }
 }
 
-/** 底边的细进度条：和播放器里的那条同一份（点 / 拖跳转，拖动时显示松手后的位置）。 */
+/**
+ * 沉浸底边的进度条：
+ * - 点按直接跳转；
+ * - 横向拖动进入精细调进度态（轨道加粗、通知外层清屏并显示大号时间预览）；
+ * - 竖向滑动（大拇指从屏幕底部往上划翻页）**不消费**，直接放行给外层 [immersionSwipes] 切视频。
+ */
 @Composable
-private fun ImmersionProgress(session: PlaybackSession, modifier: Modifier = Modifier) {
+private fun ImmersionProgress(
+    session: PlaybackSession,
+    onScrubFractionChange: (Float?) -> Unit,
+    modifier: Modifier = Modifier,
+) {
     val state = session.state
     val visible = LocalWindowVisible.current
     val pos by produceState(state.positionMs, state.playing, visible) {
         value = state.nowMs()
         while (visible) awaitProgressUpdate(state) { value = it }
     }
-    ProgressBar(pos, state.bufferedMs, state.durationMs, onSeek = { session.seekTo(it) }, modifier = modifier)
+    val durationMs = state.durationMs
+    var dragFraction by remember(session) { mutableStateOf<Float?>(null) }
+    val currentOnScrub by rememberUpdatedState(onScrubFractionChange)
+    val currentOnSeek by rememberUpdatedState<(Long) -> Unit> { ms -> session.seekTo(ms) }
+
+    val scrubbing = dragFraction != null
+    val lineHeight by animateDpAsState(targetValue = if (scrubbing) 7.dp else 2.5.dp, animationSpec = tween(120), label = "immersionProgressLine")
+    val thumbSize by animateDpAsState(targetValue = if (scrubbing) 14.dp else 6.dp, animationSpec = tween(120), label = "immersionProgressThumb")
+
+    val total = durationMs.coerceAtLeast(1L)
+    val shown = dragFraction ?: (pos.toFloat() / total).coerceIn(0f, 1f)
+    val buffered = (state.bufferedMs.toFloat() / total).coerceIn(0f, 1f)
+
+    Box(
+        modifier
+            .fillMaxWidth()
+            .height(ProgressTouchHeight)
+            .pointerHoverIcon(PointerIcon.Hand)
+            .pointerInput(durationMs) {
+                if (durationMs <= 0L) return@pointerInput
+                awaitEachGesture {
+                    val down = awaitFirstDown(requireUnconsumed = false)
+                    val width = size.width.coerceAtLeast(1).toFloat()
+                    var axis: ImmersionProgressAxis? = null
+                    var targetFraction = (down.position.x / width).coerceIn(0f, 1f)
+
+                    while (true) {
+                        val event = awaitPointerEvent(PointerEventPass.Main)
+                        val c = event.changes.firstOrNull { it.id == down.id } ?: break
+                        if (!c.pressed) {
+                            if (axis == null) {
+                                // 轻点进度条：直接跳到点按位置
+                                c.consume()
+                                currentOnSeek((targetFraction * durationMs).toLong())
+                            } else if (axis == ImmersionProgressAxis.HorizontalScrub) {
+                                c.consume()
+                                dragFraction = null
+                                currentOnScrub(null)
+                                currentOnSeek((targetFraction * durationMs).toLong())
+                            }
+                            break
+                        }
+                        if (axis == null) {
+                            val totalDelta = c.position - down.position
+                            axis = immersionProgressGestureAxis(totalDelta.x, totalDelta.y, viewConfiguration.touchSlop)
+                            if (axis == ImmersionProgressAxis.VerticalPassThrough) {
+                                // 竖滑：放手让外层翻页接管
+                                break
+                            }
+                            if (axis == ImmersionProgressAxis.HorizontalScrub) {
+                                c.consume()
+                                targetFraction = (c.position.x / width).coerceIn(0f, 1f)
+                                dragFraction = targetFraction
+                                currentOnScrub(targetFraction)
+                            }
+                        } else if (axis == ImmersionProgressAxis.HorizontalScrub) {
+                            c.consume()
+                            targetFraction = (c.position.x / width).coerceIn(0f, 1f)
+                            dragFraction = targetFraction
+                            currentOnScrub(targetFraction)
+                        }
+                    }
+                    if (dragFraction != null) {
+                        dragFraction = null
+                        currentOnScrub(null)
+                    }
+                }
+            },
+        contentAlignment = Alignment.BottomStart,
+    ) {
+        Box(
+            Modifier.fillMaxWidth().padding(bottom = 8.dp),
+            contentAlignment = Alignment.CenterStart,
+        ) {
+            val trackShape = RoundedCornerShape(4.dp)
+            Box(Modifier.fillMaxWidth().height(lineHeight).background(Color.White.copy(alpha = 0.25f), trackShape))
+            Box(Modifier.fillMaxWidth(buffered).height(lineHeight).background(Color.White.copy(alpha = 0.45f), trackShape))
+            Box(Modifier.fillMaxWidth(shown).height(lineHeight).background(if (scrubbing) Color.White else Accent, trackShape))
+            BoxWithConstraints(Modifier.fillMaxWidth()) {
+                Box(
+                    Modifier.padding(start = ((maxWidth - thumbSize).coerceAtLeast(0.dp) * shown))
+                        .size(thumbSize)
+                        .background(if (scrubbing) Color.White else Accent, CircleShape),
+                )
+            }
+        }
+    }
 }
 
 // ---------------------------------------------------------------- 评论面板
 
 /**
- * 沉浸界面里的评论：右栏够宽时是从右边滑出的面板（视频已经往左让位），不够宽是从底下升起的半屏面板。
- * 内容复用现有的评论组件（[commentsList]），"共 N 条回复"照旧走 [feedhub.app.detail.DetailHost.openReplies]。
+ * 沉浸界面里的评论：
+ * - 右栏够宽（[bottomSheet] = false）：从右边滑出，视频往左让位；
+ * - 窄屏（[bottomSheet] = true）：从底下升起半屏，支持**按住顶栏下拉**以及**评论列表滚到顶后继续下拉（NestedScroll）**跟手收起。
  */
 @Composable
 private fun ImmersionComments(
     comments: CommentsState,
     poster: Poster,
     total: Long?,
+    bottomSheet: Boolean,
     onOpenReplies: (Comment) -> Unit,
     onClose: () -> Unit,
+    onSheetDragDelta: (Float) -> Unit = {},
+    onSheetDragSettle: (Float) -> Unit = {},
+    currentDragPx: () -> Float = { 0f },
     modifier: Modifier = Modifier,
 ) {
+    val listState = rememberLazyListState()
+    val latestDragDelta by rememberUpdatedState(onSheetDragDelta)
+    val latestDragSettle by rememberUpdatedState(onSheetDragSettle)
+    val latestCurrentDrag by rememberUpdatedState(currentDragPx)
+
+    val nestedScroll = remember(bottomSheet) {
+        object : NestedScrollConnection {
+            override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
+                if (!bottomSheet || source != NestedScrollSource.UserInput) return Offset.Zero
+                // 面板已经被往下拉出了一截时，手指往上推先把面板推回原位，再滚评论列表
+                if (available.y < 0f && latestCurrentDrag() > 0.5f) {
+                    val consumeY = maxOf(available.y, -latestCurrentDrag())
+                    latestDragDelta(consumeY)
+                    return Offset(0f, consumeY)
+                }
+                return Offset.Zero
+            }
+
+            override fun onPostScroll(consumed: Offset, available: Offset, source: NestedScrollSource): Offset {
+                if (!bottomSheet || source != NestedScrollSource.UserInput) return Offset.Zero
+                // 评论列表已经在顶部，继续往下拉 → 跟手把评论面板往下拉
+                if (available.y > 0f) {
+                    latestDragDelta(available.y)
+                    return Offset(0f, available.y)
+                }
+                return Offset.Zero
+            }
+
+            override suspend fun onPreFling(available: Velocity): Velocity {
+                if (!bottomSheet) return Velocity.Zero
+                if (latestCurrentDrag() > 0.5f) {
+                    latestDragSettle(available.y)
+                    return available
+                }
+                return Velocity.Zero
+            }
+        }
+    }
+
     Surface(
-        shape = RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp),
+        shape = if (bottomSheet) RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp) else RoundedCornerShape(0.dp),
         color = MaterialTheme.colorScheme.background,
         shadowElevation = 8.dp,
-        modifier = modifier,
+        modifier = modifier.swallowsDragsAndWheel(),
     ) {
-        Column(Modifier.fillMaxSize()) {
-            Row(
-                Modifier.fillMaxWidth().height(48.dp).padding(start = 12.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text(
-                    if (total != null) "评论 ${compactCount(total)}" else "评论",
-                    style = MaterialTheme.typography.titleMedium,
-                    modifier = Modifier.weight(1f),
-                )
-                if (comments.sortable) CommentSortChips(comments.sort, comments::select, compact = true)
-                IconButton(onClick = onClose) { Icon(Icons.Outlined.Close, contentDescription = "关闭评论") }
+        Column(Modifier.fillMaxSize().nestedScroll(nestedScroll)) {
+            val headerDragModifier = if (bottomSheet) {
+                Modifier.pointerInput(Unit) {
+                    val vt = VelocityTracker()
+                    detectVerticalDragGestures(
+                        onDragStart = { vt.resetTracking() },
+                        onVerticalDrag = { change, dragAmount ->
+                            vt.addPointerInputChange(change)
+                            change.consume()
+                            latestDragDelta(dragAmount)
+                        },
+                        onDragEnd = { latestDragSettle(vt.calculateVelocity().y) },
+                        onDragCancel = { latestDragSettle(0f) },
+                    )
+                }
+            } else {
+                Modifier
+            }
+            Column(Modifier.fillMaxWidth().then(headerDragModifier)) {
+                if (bottomSheet) {
+                    Spacer(Modifier.height(8.dp))
+                    Box(
+                        Modifier.align(Alignment.CenterHorizontally).width(36.dp).height(4.dp)
+                            .clip(RoundedCornerShape(2.dp))
+                            .background(MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.35f)),
+                    )
+                }
+                Row(
+                    Modifier.fillMaxWidth().height(46.dp).padding(start = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        if (total != null) "评论 ${compactCount(total)}" else "评论",
+                        style = MaterialTheme.typography.titleMedium,
+                        modifier = Modifier.weight(1f),
+                    )
+                    if (comments.sortable) CommentSortChips(comments.sort, comments::select, compact = true)
+                    IconButton(onClick = onClose) { Icon(Icons.Outlined.Close, contentDescription = "关闭评论") }
+                }
             }
             HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
             SelectionContainer {
-                LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(start = 12.dp, end = 12.dp, bottom = 16.dp)) {
+                LazyColumn(
+                    state = listState,
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(start = 12.dp, end = 12.dp, bottom = 16.dp),
+                ) {
                     commentsList(comments, poster, onOpenReplies)
                 }
             }
@@ -755,16 +1409,8 @@ private fun ImmersionComments(
 
 // ---------------------------------------------------------------- 音量
 
-/** 音量滑块面板离画面右边的距离：让开右侧那一竖排按钮。 */
 private val VolumePanelEndPadding = 74.dp
 
-/**
- * 音量滑块面板：上面是音量值，中间一条**竖向**滑块（上大下小，拖 / 点都行），下面一个静音开关。
- * 音量还是全 App 共用那一份（[feedhub.app.video.AppVolume]），这里走 [PlaybackSession.setVolume] / [PlaybackSession.toggleMute]。
- *
- * 面板自己吃掉这一层上的**拖动**和**滚轮**（[swallowsDragsAndWheel]）：外层沉浸界面的上下翻页收不到，
- * 拖滑杆 / 在面板上滚都不会切视频。
- */
 @Composable
 private fun VolumePanel(
     volume: Int,
@@ -785,7 +1431,7 @@ private fun VolumePanel(
         ) {
             Text(if (muted) "静音" else "$volume%", color = OnVideo, fontSize = 12.sp)
             VerticalVolumeSlider(if (muted) 0 else volume, onVolume)
-            IconButton(onClick = onToggleMute) { // 默认就是 48dp 触控热区（E7）
+            IconButton(onClick = onToggleMute) {
                 Icon(
                     if (muted || volume == 0) Icons.AutoMirrored.Filled.VolumeOff else Icons.AutoMirrored.Filled.VolumeUp,
                     contentDescription = if (muted) "取消静音" else "静音",
@@ -797,12 +1443,11 @@ private fun VolumePanel(
     }
 }
 
-/** 竖向音量滑块：按住 / 拖动的位置（上大下小）就是音量；换算是纯函数 [volumeFromSliderY]，离线测得到。 */
 @Composable
 private fun VerticalVolumeSlider(volume: Int, onChange: (Int) -> Unit, modifier: Modifier = Modifier) {
     Box(
         modifier
-            .width(44.dp) // 触控热区宽 ≥44dp（E7；那条 4dp 的线还是居中的）
+            .width(44.dp)
             .height(ImmersionVolumeSliderHeight)
             .pointerHoverIcon(PointerIcon.Hand)
             .pointerInput(Unit) {
@@ -822,11 +1467,8 @@ private fun VerticalVolumeSlider(volume: Int, onChange: (Int) -> Unit, modifier:
         contentAlignment = Alignment.Center,
     ) {
         val fraction = volume.coerceIn(0, 100) / 100f
-        // 轨道
         Box(Modifier.width(4.dp).fillMaxHeight().background(Color.White.copy(alpha = 0.3f), RoundedCornerShape(2.dp)))
-        // 已选部分：从下往上
         Box(Modifier.align(Alignment.BottomCenter).width(4.dp).fillMaxHeight(fraction).background(OnVideo, RoundedCornerShape(2.dp)))
-        // 滑块头
         Box(
             Modifier.align(Alignment.BottomCenter)
                 .padding(bottom = (ImmersionVolumeSliderHeight - 12.dp) * fraction)
@@ -839,74 +1481,85 @@ private fun VerticalVolumeSlider(volume: Int, onChange: (Int) -> Unit, modifier:
 // ---------------------------------------------------------------- 手势
 
 /**
- * 沉浸界面的上下切换手势：
- * - **不消费事件**（只在 [PointerEventPass.Final] 看位置变化），所以"点一下暂停 / 双击放大 / 长按 3 倍速"
- *   照旧由 [PlayerView] 那一套接：轻点位移不到阈值就是一次点按，长按不受影响；
- * - **这一场触摸归别人时整场不翻页**（[ImmersionSwipeTracker]）：长按倍速按着（[suppressed]）、内层控件
- *   （音量滑杆 / 进度条 / 拖进度 / 长按倍速的拖动）在 Main pass 消费了移动——位移清零、不跟手、松手也不补触发
- * - 拖动过程中把位移交给 [onDrag]（整块内容跟着手指走），松手交给 [onSettle]（滑够就切、不够就弹回去）；
- * - 滚轮（桌面）累计到一格就切一条，[onStep] 一边走一边清零（连发时靠 [DetailNavigator] 那边的节流兜底）；
- *   在 [PointerEventPass.Final] 看，**被别人（音量面板）消费掉的滚轮不算**。
+ * 沉浸界面的整屏上下划页手势：
+ * - 在 [PointerEventPass.Main]（子控件之后）检查：若内层滑杆 / 文案 / 长按倍速已经消费或占用，整场让路；
+ * - 过 `touchSlop` 时按 [ImmersionAxisLockRatio] 锁定主轴：竖向为主立即锁定翻页并 `consume()`（同时取消内层单击等待，
+ *   拖出去再拖回起点松手不会误暂停）；横向为主则整场忽略，绝不因斜滑夹带纵向偏移误切视频；
+ * - 松手把累计纵向位移和 `VelocityTracker` 算出的纵向速度一并交给 [onSettle] 做 Fling / 比例结算。
  */
+@Composable
 private fun Modifier.immersionSwipes(
-    thresholdPx: Float,
-    paneHeightPx: Float,
+    onDown: () -> Unit,
     onDrag: (Float) -> Unit,
-    onSettle: (Float) -> Unit,
-    onStep: (Int) -> Unit,
+    onSettle: (dyPx: Float, velocityYPxPerSec: Float) -> Unit,
+    onAbort: () -> Unit,
+    onWheelStep: (Int) -> Unit,
     suppressed: () -> Boolean,
-): Modifier = this
-    .pointerInput(thresholdPx, paneHeightPx) {
-        awaitEachGesture {
-            val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Final)
-            val tracker = ImmersionSwipeTracker()
-            while (true) {
-                val event = awaitPointerEvent(PointerEventPass.Final)
-                val change = event.changes.firstOrNull { it.id == down.id } ?: break
-                if (!change.pressed) break
-                val moved = tracker.move(
-                    deltaY = change.position.y - change.previousPosition.y,
-                    // 只看按着时的消费：抬手那一下会被单击检测 consume（常规做法），不能因此吞掉正常翻页
-                    consumed = event.changes.any { it.isConsumed },
-                    speedHeld = suppressed(),
-                )
-                if (moved) onDrag(tracker.offset)
-            }
-            // 长按加速按着 / 滑杆吃掉了这一场：结算 0（不切），跟手的位移也弹回去
-            onSettle(tracker.settle())
-        }
-    }
-    .pointerInput(Unit) {
-        awaitPointerEventScope {
-            var acc = 0f
-            while (true) {
-                // Final pass：内层控件（音量面板）先消费掉的滚轮不归翻页
-                val event = awaitPointerEvent(PointerEventPass.Final)
-                if (event.type != PointerEventType.Scroll) continue
-                if (event.changes.any { it.isConsumed }) continue
-                acc += event.changes.firstOrNull()?.scrollDelta?.y ?: 0f
-                val step = immersionWheelStep(acc)
-                if (step != 0) {
-                    acc = 0f
-                    onStep(step)
+): Modifier {
+    val latestOnDown by rememberUpdatedState(onDown)
+    val latestOnDrag by rememberUpdatedState(onDrag)
+    val latestOnSettle by rememberUpdatedState(onSettle)
+    val latestOnAbort by rememberUpdatedState(onAbort)
+    val latestOnWheelStep by rememberUpdatedState(onWheelStep)
+    val latestSuppressed by rememberUpdatedState(suppressed)
+    return this
+        .pointerInput(Unit) {
+            awaitEachGesture {
+                val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Main)
+                latestOnDown()
+                var settled = false
+                try {
+                    val tracker = ImmersionSwipeTracker(slopPx = viewConfiguration.touchSlop)
+                    val velocityTracker = VelocityTracker()
+                    velocityTracker.addPointerInputChange(down)
+
+                    while (true) {
+                        val event = awaitPointerEvent(PointerEventPass.Main)
+                        val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                        velocityTracker.addPointerInputChange(change)
+                        if (!change.pressed) break
+                        val moved = tracker.move(
+                            deltaY = change.position.y - change.previousPosition.y,
+                            consumed = event.changes.any { it.isConsumed },
+                            speedHeld = latestSuppressed(),
+                            deltaX = change.position.x - change.previousPosition.x,
+                        )
+                        if (tracker.locked) {
+                            change.consume()
+                        }
+                        if (moved) latestOnDrag(tracker.offset)
+                    }
+                    val dy = tracker.settle()
+                    val vy = if (tracker.locked && !tracker.owned) velocityTracker.calculateVelocity().y else 0f
+                    settled = true
+                    latestOnSettle(dy, vy)
+                } finally {
+                    if (!settled) latestOnAbort()
                 }
             }
         }
-    }
+        .pointerInput(Unit) {
+            awaitPointerEventScope {
+                var acc = 0f
+                while (true) {
+                    val event = awaitPointerEvent(PointerEventPass.Final)
+                    if (event.type != PointerEventType.Scroll) continue
+                    if (event.changes.any { it.isConsumed }) continue
+                    acc += event.changes.firstOrNull()?.scrollDelta?.y ?: 0f
+                    val step = immersionWheelStep(acc)
+                    if (step != 0) {
+                        acc = 0f
+                        latestOnWheelStep(step)
+                    }
+                }
+            }
+        }
+}
 
-/** 点了要有点反应：悬停换上手指指针（桌面）。 */
 @Composable
 private fun Modifier.immersionClickable(onClick: () -> Unit): Modifier =
     this.pointerHoverIcon(PointerIcon.Hand).clickable(interactionSource = remember { MutableInteractionSource() }, indication = null, onClick = onClick)
 
-/**
- * 这一层自己吃掉按下的**拖动**和**滚轮**：沉浸界面的上下翻页在
- * [PointerEventPass.Final] 看到"移动被消费了"就整场让路（[ImmersionSwipeTracker]），
- * 在 [PointerEventPass.Final] 看到"滚轮被消费了"就不翻。
- *
- * **不消费按下**（位置还没变的那一下）：面板里的滑块 / 静音按钮还要它；这里的 Main pass 在子控件之后跑，
- * 也影响不到子控件自己的手势。
- */
 private fun Modifier.swallowsDragsAndWheel(): Modifier = this.pointerInput(Unit) {
     awaitPointerEventScope {
         while (true) {

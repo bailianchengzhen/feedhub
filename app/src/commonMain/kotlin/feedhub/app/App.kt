@@ -40,6 +40,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.isCtrlPressed
@@ -73,6 +75,7 @@ import feedhub.app.settings.SettingsScreen
 import feedhub.app.settings.SettingsSection
 import feedhub.app.translate.LocalTranslation
 import feedhub.app.ui.FeedhubTheme
+import feedhub.app.ui.SystemBarIcons
 import feedhub.app.video.PlayPrefetcher
 import feedhub.core.FeedItem
 import feedhub.core.FeedKind
@@ -165,7 +168,7 @@ fun App(
     FeedhubTheme(settings.darkMode) {
       CompositionLocalProvider(
         LocalPlatforms provides graph.platforms,
-        LocalTranslation provides graph.translation,
+        LocalTranslation provides graph.translation.takeIf { graph.showTranslation },
       ) {
         var tab by remember { mutableStateOf(initialTab) }
         // 系统返回：
@@ -441,22 +444,30 @@ fun App(
                     }
                     // 最上面那条详情：搜索页开着 = 搜索页自己的那条（盖在搜索页上）；否则是页签的那条全屏详情。
                     // 双栏右栏那条不在这里（[ScreenLayers.topDetail] 已经把它排除掉了）。
+                    // 按"有没有打开全屏详情"重置，而不是按 topDetail.key：沉浸里连刷下一条时 VideoDetailScreen 保持挂载，
+                    // 状态栏与底栏一直维持纯黑沉浸，不会在换条瞬间闪一帧浅色底。
+                    var detailImmersive by remember(topDetail != null) { mutableStateOf(false) }
+                    val themeDark = MaterialTheme.colorScheme.background.luminance() < 0.5f
+                    SystemBarIcons(themeDark || (topDetail != null && detailImmersive))
                     if (topDetail != null) {
-                        // 全屏详情盖在原界面上（Surface 吃掉底下的点击），不把原界面换掉：关掉后网格的滚动位置还在
-                        // safeDrawing：安卓是 edge-to-edge（enableEdgeToEdge），不躲开会画到状态栏 / 手势条底下
-                        // （桌面的 insets 全是 0，等于没加）。
+                        // 全屏详情盖在原界面上（Surface 铺满整屏涂底色，里面的 Box 再按 safeDrawing 避让状态栏 / 手势条；
+                        // 竖屏沉浸视频时整屏底色用纯黑，浅色主题下状态栏 / 手势条背后也不再发白）。
                         Surface(
-                            color = MaterialTheme.colorScheme.background,
-                            modifier = Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing),
+                            color = if (detailImmersive) Color.Black else MaterialTheme.colorScheme.background,
+                            modifier = Modifier.fillMaxSize(),
                         ) {
-                            // 搜索里点开的详情**没有来源列表**（沉浸播放的上下切换不给它，和收藏 / 历史同一条规矩），
-                            // 所以这里把 navigator 置空；页签自己的那条详情照旧拿首页 / 关注那份。
-                            if (layers.searchOpen) {
-                                CompositionLocalProvider(LocalDetailNavigator provides null) {
-                                    DetailPane(graph, topDetail, onClose, Modifier.fillMaxSize())
+                            Box(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing)) {
+                                CompositionLocalProvider(LocalFullscreenDetailImmersive provides { detailImmersive = it }) {
+                                    // 搜索里点开的详情**没有来源列表**（沉浸播放的上下切换不给它，和收藏 / 历史同一条规矩），
+                                    // 所以这里把 navigator 置空；页签自己的那条详情照旧拿首页 / 关注那份。
+                                    if (layers.searchOpen) {
+                                        CompositionLocalProvider(LocalDetailNavigator provides null) {
+                                            DetailPane(graph, topDetail, onClose, Modifier.fillMaxSize())
+                                        }
+                                    } else {
+                                        DetailPane(graph, topDetail, onClose, Modifier.fillMaxSize())
+                                    }
                                 }
-                            } else {
-                                DetailPane(graph, topDetail, onClose, Modifier.fillMaxSize())
                             }
                         }
                     }
@@ -631,6 +642,9 @@ private fun FreezeWhenCovered(
         }
     }
 }
+
+/** 全屏详情页里是不是竖屏沉浸模式（用来把系统状态栏 / 手势条背后涂成纯黑并切换浅色系统栏图标）。 */
+val LocalFullscreenDetailImmersive = compositionLocalOf<(Boolean) -> Unit> { {} }
 
 /** 开发工具的口子（性能探针）：[open] 在 App 组合着的时候能用，等于在首页点开这一条。 */
 internal object AppDebug {

@@ -104,84 +104,93 @@ fun DetailPane(graph: AppGraph, item: FeedItem, onClose: () -> Unit, modifier: M
     val closeAll by rememberUpdatedState(onClose)
     val back: () -> Unit = { if (stack.size > 1) stack.removeAt(stack.lastIndex) else onClose() }
 
-    key(top.key) {
-        val host = remember {
-            DetailHost(
-                graph, top.platform, scope,
-                push = { if (it.key != stack.last().key) stack.add(it) },
-                closeAllDetail = { closeAll() },
-                copyToClipboard = { clipboard.setText(AnnotatedString(it)) },
-            )
-        }
-        // 详情页的「原文 / 译文」总开关：整页一个，评论 / 楼中楼共用；换一条内容就重置
-        // 卡片上已经下好的那张缩略图：详情里的图先用它垫着，原图到了再淡入替换。
-        // 只在打开这一条内容时取一次（卡片画过才记，取不到就是空的 = 照旧加载）。
-        val thumbnails = remember(top.key) { DetailThumbnails.of(top.key) }
-        SideEffect { DetailDebug.host = host }
-        // 时间线：每打开一条内容就把"图到没到齐"的计数归零，
-        // 这样第二次点进同一条内容也能单独看出它是不是又从 0 开始。正常界面这两下加减没有别的作用。
-        LaunchedEffect(top.key) { DetailDebug.resetImageCounters() }
-        // 安卓的系统返回键 / 返回手势：和 Esc 一样，先关大图 → 关楼中楼 → 返回上一层 → 关详情（桌面是空实现）
-        PlatformBackHandler { if (!host.dismissTop()) back() }
-        val focus = remember { FocusRequester() }
-        LaunchedEffect(Unit) { focus.requestFocus() }
-        SideEffect { host.refocus = { runCatching { focus.requestFocus() } } }
-        BoxWithConstraints(
-            modifier
-                .focusRequester(focus)
-                .focusable()
-                // 点了详情里的任何地方都把键盘焦点拉回来，Esc 才一直有效
-                .pointerInput(Unit) {
-                    awaitEachGesture {
-                        awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
-                        focus.requestFocus()
-                    }
+    // 外层容器与 VideoDetailScreen 不套在 key(top.key) 里：
+    // 竖屏沉浸连划时手指可能在上一条收尾动画未结束前就再次按下并提交切换，若整棵子树按 top.key 卸载重建，
+    // 正在进行的手势协程（pointerInput）会被当场取消导致连划断触。图文详情 / 覆盖层照旧按 top.key 独立重置。
+    val host = remember(stack, top.key) {
+        DetailHost(
+            graph, top.platform, scope,
+            push = { if (it.key != stack.last().key) stack.add(it) },
+            closeAllDetail = { closeAll() },
+            copyToClipboard = { clipboard.setText(AnnotatedString(it)) },
+        )
+    }
+    // 详情页的「原文 / 译文」总开关：整页一个，评论 / 楼中楼共用；换一条内容就重置
+    // 卡片上已经下好的那张缩略图：详情里的图先用它垫着，原图到了再淡入替换。
+    // 只在打开这一条内容时取一次（卡片画过才记，取不到就是空的 = 照旧加载）。
+    val thumbnails = remember(top.key) { DetailThumbnails.of(top.key) }
+    SideEffect { DetailDebug.host = host }
+    // 时间线：每打开一条内容就把"图到没到齐"的计数归零，
+    // 这样第二次点进同一条内容也能单独看出它是不是又从 0 开始。正常界面这两下加减没有别的作用。
+    LaunchedEffect(top.key) { DetailDebug.resetImageCounters() }
+    // 安卓的系统返回键 / 返回手势：和 Esc 一样，先关大图 → 关楼中楼 → 返回上一层 → 关详情（桌面是空实现）
+    PlatformBackHandler { if (!host.dismissTop()) back() }
+    val focus = remember { FocusRequester() }
+    LaunchedEffect(top.key) { focus.requestFocus() }
+    SideEffect { host.refocus = { runCatching { focus.requestFocus() } } }
+    BoxWithConstraints(
+        modifier
+            .focusRequester(focus)
+            .focusable()
+            // 点了详情里的任何地方都把键盘焦点拉回来，Esc 才一直有效
+            .pointerInput(Unit) {
+                awaitEachGesture {
+                    awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+                    focus.requestFocus()
                 }
-                .onKeyEvent { e ->
-                    if (e.type == KeyEventType.KeyDown && e.key == Key.Escape) {
-                        if (!host.dismissTop()) back()
-                        true
-                    } else {
-                        false
-                    }
-                },
-        ) {
-            val wide = maxWidth >= 600.dp
-            CompositionLocalProvider(
-                LocalDetailHost provides host,
-                LocalDetailThumbnails provides thumbnails,
-                // 评论 / 楼中楼没有平台字段，自动翻译按平台判定时靠它（见 TranslationStore.shouldAutoTranslate）
-                LocalDetailPlatform provides top.platform,
-            ) {
-                if (adult) {
-                    // 整条隐藏：正文、评论、媒体一个都不请求，只给这一行 + 返回
-                    AdultHiddenDetail(back, Modifier.fillMaxSize())
+            }
+            .onKeyEvent { e ->
+                if (e.type == KeyEventType.KeyDown && e.key == Key.Escape) {
+                    if (!host.dismissTop()) back()
+                    true
                 } else {
-                    when (val target = top.detail) {
-                        is DetailTarget.Native ->
-                            if (top.isVideoPost() && graph.sourceOrNull(top.platform) is VideoSource) {
-                                VideoDetailScreen(graph, top, target.id, back, Modifier.fillMaxSize())
-                            } else {
+                    false
+                }
+            },
+    ) {
+        val wide = maxWidth >= 600.dp
+        CompositionLocalProvider(
+            LocalDetailHost provides host,
+            LocalDetailThumbnails provides thumbnails,
+            // 评论 / 楼中楼没有平台字段，自动翻译按平台判定时靠它（见 TranslationStore.shouldAutoTranslate）
+            LocalDetailPlatform provides top.platform,
+        ) {
+            if (adult) {
+                // 整条隐藏：正文、评论、媒体一个都不请求，只给这一行 + 返回
+                key(top.key) {
+                    AdultHiddenDetail(back, Modifier.fillMaxSize())
+                }
+            } else {
+                when (val target = top.detail) {
+                    is DetailTarget.Native ->
+                        if (top.isVideoPost() && graph.sourceOrNull(top.platform) is VideoSource) {
+                            VideoDetailScreen(graph, top, target.id, back, Modifier.fillMaxSize())
+                        } else {
+                            key(top.key) {
                                 PostDetailScreen(graph, top, target.id, back, Modifier.fillMaxSize())
                             }
-                        is DetailTarget.Web -> UnsupportedDetail(top, target.url, back, Modifier.fillMaxSize())
+                        }
+                    is DetailTarget.Web -> key(top.key) {
+                        UnsupportedDetail(top, target.url, back, Modifier.fillMaxSize())
                     }
+                }
+                key(top.key) {
                     host.replies?.let { RepliesPanel(it, host, wide, onClose = host::closeReplies, modifier = Modifier.fillMaxSize()) }
                     host.viewer?.let { ImageViewer(it, onClose = host::closeViewer) }
                 }
             }
-            host.toast?.let { message ->
-                Surface(
-                    shape = RoundedCornerShape(50),
-                    color = MaterialTheme.colorScheme.inverseSurface,
-                    modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 32.dp),
-                ) {
-                    Text(message, color = MaterialTheme.colorScheme.inverseOnSurface, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.padding(horizontal = 18.dp, vertical = 10.dp))
-                }
-            }
-            // 酷安评论的人机验证：只盖住这个详情区（双栏=右栏，全屏=整屏），不弹全局对话框
-            CaptchaOverlay(graph)
         }
+        host.toast?.let { message ->
+            Surface(
+                shape = RoundedCornerShape(50),
+                color = MaterialTheme.colorScheme.inverseSurface,
+                modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 32.dp),
+            ) {
+                Text(message, color = MaterialTheme.colorScheme.inverseOnSurface, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.padding(horizontal = 18.dp, vertical = 10.dp))
+            }
+        }
+        // 酷安评论的人机验证：只盖住这个详情区（双栏=右栏，全屏=整屏），不弹全局对话框
+        CaptchaOverlay(graph)
     }
 }
 

@@ -38,11 +38,16 @@ class DetailNavigator(
     var switched: Boolean = false
         private set
 
-    /** 真正换条目（节流之后）。返回这次有没有真的换。 */
-    fun select(item: FeedItem): Boolean {
+    /**
+     * 真正换条目。返回这次有没有真的换。
+     *
+     * @param throttled 滚轮 / 键盘连发传 true（[selectMinGapMs] 内只认一次）；触屏整屏划页结算传 false，
+     *   避免用户快速连划跳过两条视频时第二下被节流吞掉。
+     */
+    fun select(item: FeedItem, throttled: Boolean = true): Boolean {
         val t = now()
         val last = lastSelectAt
-        if (last != null && t - last < selectMinGapMs) return false
+        if (throttled && last != null && t - last < selectMinGapMs) return false
         lastSelectAt = t
         switched = true
         onSelect(item)

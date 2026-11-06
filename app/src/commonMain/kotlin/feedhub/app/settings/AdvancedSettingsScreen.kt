@@ -90,8 +90,8 @@ internal enum class AdvancedSection(val key: String, val title: String, val summ
 
     VIDEO("video", "视频（进阶）", "编码偏好、已记下的解码上限", Icons.Outlined.Movie),
 
-    /** 翻译引擎的两个文件路径（开关和平台标签留在「翻译（本地）」）。 */
-    TRANSLATION("translation", "翻译（进阶）", "翻译模型（GGUF）与 llama-server 的路径", Icons.Outlined.Translate),
+    /** Bergamot 本地翻译引擎状态、缓存清理与可选自定义模型目录（开关和平台标签留在「翻译（本地）」）。 */
+    TRANSLATION("translation", "翻译（进阶）", "引擎状态、缓存清理与模型目录", Icons.Outlined.Translate),
 
     BEHAVIOR("behavior", "行为数据", "看看记了多少、本地向量（实验）、导出", Icons.Outlined.QueryStats),
 

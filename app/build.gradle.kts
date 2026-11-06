@@ -40,13 +40,47 @@ dependencies {
 
 
 /**
- * 本地向量走 NPU：`-Pfeedhub.embedNpu=true` 的构建才引 QNN。
- *
- * 不带属性时这两个 AAR 一个字节都不进 APK：NPU 那条路是实验开关，默认关，
- * 只有用户自己实测功耗时才用得上。带了属性才把 QNN EP 插件 + QNN 运行时加进 `:app` 的安卓侧
- * （APK 里只留 v79 的 skel / stub，见 `androidApp/build.gradle.kts` 的 `jniLibs.excludes`）。
+ * 可选 AI 能力编译开关（默认全部 `false` = **纯净基础版**：无 NPU / ONNX 向量计算、无翻译模型子进程）：
+ * - `-Pfeedhub.embed=true`：开启本地向量（安卓 CPU q4 / 桌面 ORT CPU q4）；
+ * - `-Pfeedhub.embedNpu=true`：开启安卓 NPU 本地向量（自动隐含 `embedEnabled = true`，带上 QNN EP + QNN 运行时）；
+ * - `-Pfeedhub.translate=true`：开启本地翻译（Project Bergamot 进程内引擎 + Firefox 离线英译中模型）。
  */
 val embedNpu: Boolean = providers.gradleProperty("feedhub.embedNpu").orNull == "true"
+val embedEnabled: Boolean = embedNpu || providers.gradleProperty("feedhub.embed").orNull == "true"
+val translateEnabled: Boolean = providers.gradleProperty("feedhub.translate").orNull == "true"
+
+val generatedFeaturesDir = layout.buildDirectory.dir("generated/feedhub-features/commonMain/kotlin")
+val generateBuildFeatures = tasks.register("generateBuildFeatures") {
+    group = "build"
+    description = "按编译开关生成 BuildFeatures（默认全 false = 纯净基础版）"
+    inputs.property("embed", embedEnabled)
+    inputs.property("embedNpu", embedNpu)
+    inputs.property("translate", translateEnabled)
+    outputs.dir(generatedFeaturesDir)
+    doLast {
+        val pkgDir = generatedFeaturesDir.get().asFile.resolve("feedhub/app").apply {
+            deleteRecursively()
+            mkdirs()
+        }
+        pkgDir.resolve("BuildFeatures.kt").writeText(
+            """
+            package feedhub.app
+
+            /**
+             * 编译期可选 AI 特性开关（由 `:app` 的 `generateBuildFeatures` 生成）。
+             *
+             * 默认全部为 `false`（纯净基础版：不打包模型与推理运行库、不起后台调度器、设置页不显示无效卡片）。
+             * 显式传入 `-Pfeedhub.embed=true`、`-Pfeedhub.embedNpu=true`、`-Pfeedhub.translate=true` 开启对应能力。
+             */
+            object BuildFeatures {
+                const val EMBED: Boolean = $embedEnabled
+                const val EMBED_NPU: Boolean = $embedNpu
+                const val TRANSLATE: Boolean = $translateEnabled
+            }
+            """.trimIndent() + "\n",
+        )
+    }
+}
 
 // 界面：Compose Multiplatform。两个目标：桌面（jvm "desktop"，出 .deb）和安卓（kotlin 里的 `android {}`，
 // 出 APK 用的 AAR），界面代码写在 commonMain；桌面专有的东西（窗口、文件路径、截图工具）在 desktopMain，
@@ -82,7 +116,14 @@ kotlin {
         val jvmShared = create("jvmShared") { dependsOn(commonMain.get()) }
         jvmShared.dependencies { implementation(project(":rust-bridge")) }
         getByName("desktopMain").dependsOn(jvmShared)
-        getByName("androidMain").dependsOn(jvmShared)
+        getByName("androidMain") {
+            dependsOn(jvmShared)
+            // 基础版走 androidNoEmbed（空钩子，零 ORT/QNN 类引用）；开 embed 时走 androidEmbed
+            kotlin.srcDir(if (embedEnabled) "src/androidEmbed/kotlin" else "src/androidNoEmbed/kotlin")
+        }
+        commonMain {
+            kotlin.srcDir(generateBuildFeatures)
+        }
         commonMain.dependencies {
             implementation(project(":core"))
             // 首页大脑（穿插 / 打分 / 过滤 / 搜索混排）的门面在桥接层：:core 在依赖顺序上在它下面，不能倒过来。
@@ -126,15 +167,14 @@ kotlin {
             implementation(libs.media3.ui)
             // 登录 WebView：ProxyController（代理覆盖，fail-closed）+ getCookieInfo（退出登录精确清 Cookie）
             implementation(libs.androidx.webkit)
-            // 本地向量：ONNX Runtime 的安卓 AAR。安卓侧用它跑推理；
-            // **桌面**只借它 AAR 里的 `headers/` 编 JNI shim（见下面 stageDesktopEmbed），不链它的 .so 进 deb；
-            // 模型文件本身在 :androidApp 的 assets 里（构建时从 -Pfeedhub.embedModelDir 拷进去）
-            implementation(libs.onnxruntime.android)
-            // 本地向量走 NPU：只有 `-Pfeedhub.embedNpu=true` 才带上 QNN EP 插件 + QNN 运行时。
-            // 加进来就是白占几十 MB）。
-            if (embedNpu) {
-                implementation(libs.onnxruntime.android.qnn)
-                implementation(libs.qnn.runtime)
+            // 本地向量：默认基础版不引任何 ORT / QNN AAR（省 ~34 MB/ABI + QNN 数十 MB）；
+            // 显式开启 `-Pfeedhub.embed=true` 时带 ONNX Runtime，`-Pfeedhub.embedNpu=true` 再带 QNN EP + 运行时。
+            if (embedEnabled) {
+                implementation(libs.onnxruntime.android)
+                if (embedNpu) {
+                    implementation(libs.onnxruntime.android.qnn)
+                    implementation(libs.qnn.runtime)
+                }
             }
             // 「从电脑同步」的扫码：CameraX（预览 + 帧分析）和 zxing core（app 的 commonMain 已经带了解码用的类）
             implementation(libs.androidx.camera.camera2)
@@ -224,7 +264,8 @@ val gstEnvTest = tasks.register<Test>("gstEnvTest") {
     systemProperty("socksNonProxyHosts", "localhost|127.*|[::1]|0.0.0.0|[::0]")
     systemProperty("java.net.useSystemProxies", "false")
     systemProperty("feedhub.embed.ort.dir", desktopEmbedPath.get())
-    dependsOn(stageDesktopEmbed)
+    systemProperty("feedhub.translate.bergamot.dir", desktopTranslatePath.get())
+    dependsOn(stageDesktopEmbed, stageDesktopTranslate)
     // 单独跑的那一支也要能被全量套件的入口带起来（见下面 test / check 的接线）
     outputs.upToDateWhen { false }
 }
@@ -312,13 +353,15 @@ val desktopEmbedModelSha256 = mapOf(
     "model_q4.onnx_data" to "c3975f2d1ab7a1878ae31a7d7a9b7804a827aff3800b60dfceafce21cac3df49",
     "tokenizer.json" to "4d777ef5bdc1aa36227abdfb77c3e49e7b9c892d16e1b6bda41c393504828be4",
 )
-// 头文件只借这一份 AAR（不参与编译，就是当 zip 用）
+// 头文件只借这一份 AAR（不参与编译，就是当 zip 用；基础版不解析它）
 val ortHeaders: Configuration by configurations.creating {
     isCanBeConsumed = false
     isCanBeResolved = true
     isTransitive = false
 }
-dependencies { add("ortHeaders", libs.onnxruntime.android) }
+if (embedEnabled) {
+    dependencies { add("ortHeaders", libs.onnxruntime.android) }
+}
 // 桌面向量的产物目录：Gradle 任务（截图 / devMain / 测试）用 `-Dfeedhub.embed.ort.dir` 指到这儿
 val desktopEmbedDir = layout.buildDirectory.dir("desktop-embed")
 
@@ -337,7 +380,7 @@ fun sha256Of(file: File): String {
 
 val stageDesktopEmbed = tasks.register("stageDesktopEmbed") {
     group = "distribution"
-    description = "编 JNI shim + 把 ORT 运行库 / q4 模型拷进 App resources（缺东西就出一份空的，照常构建）"
+    description = "编 JNI shim + 把 ORT 运行库 / q4 模型拷进 App resources（基础版清空跳过）"
     val out = desktopEmbedDir
     val resourcesOut = appResources.map { it.dir("common/embed-ort") }
     val cpp = file("src/desktopMain/cpp/feedhub_onnx_embed.c")
@@ -345,17 +388,26 @@ val stageDesktopEmbed = tasks.register("stageDesktopEmbed") {
     val modelFiles = desktopEmbedModelSha256.keys.associateWith { name ->
         file(if (name == "tokenizer.json") "$desktopEmbedModelDir/$name" else "$desktopEmbedModelDir/onnx/$name")
     }
-    inputs.file(cpp)
-    inputs.file(ortLib)
-    inputs.files(modelFiles.values)
-    inputs.files(ortHeaders)
-    inputs.property("ortDir", desktopEmbedOrtDir)
-    inputs.property("modelDir", desktopEmbedModelDir)
-    inputs.property("sha256", listOf(desktopEmbedOrtSha256) + desktopEmbedModelSha256.values)
+    inputs.property("embedEnabled", embedEnabled)
+    if (embedEnabled) {
+        inputs.file(cpp)
+        if (ortLib.isFile) inputs.file(ortLib)
+        inputs.files(modelFiles.values.filter { it.isFile })
+        inputs.files(ortHeaders)
+        inputs.property("ortDir", desktopEmbedOrtDir)
+        inputs.property("modelDir", desktopEmbedModelDir)
+        inputs.property("sha256", listOf(desktopEmbedOrtSha256) + desktopEmbedModelSha256.values)
+    }
     outputs.dir(out)
     outputs.dir(resourcesOut)
     doLast {
         val dir = out.get().asFile.apply { deleteRecursively(); mkdirs() }
+        val resDir = resourcesOut.get().asFile.apply { deleteRecursively() }
+        if (!embedEnabled) {
+            resDir.mkdirs()
+            logger.lifecycle("桌面本地向量：基础版构建（未传 -Pfeedhub.embed=true），不打包 ORT 运行库与向量模型")
+            return@doLast
+        }
         val staged = linkedMapOf<String, File>()
         // 1) 运行库（校验哈希；不对就不带——宁可不带，也别用一份来源不明的库算向量）
         if (ortLib.isFile) {
@@ -430,7 +482,7 @@ val stageDesktopEmbed = tasks.register("stageDesktopEmbed") {
             }
         }
         // 拷到两处：build/desktop-embed（Gradle 任务 / 测试用）和 app resources（deb 用）
-        val resDir = resourcesOut.get().asFile.apply { deleteRecursively(); mkdirs() }
+        resDir.mkdirs()
         var total = 0L
         for ((name, from) in staged) {
             from.copyTo(File(dir, name), overwrite = true)
@@ -476,21 +528,136 @@ tasks.matching { it.name == "screenshot" || it.name == "devMain" }.configureEach
     systemProperty("feedhub.embed.ort.dir", desktopEmbedPath.get())
 }
 
-// 本地翻译的默认模型 / llama-server（桌面）：`-Pfeedhub.translate.model=` / `-Pfeedhub.translate.server=`，
-// 默认找仓库 `deps/translate/` 下的那两份。文件在才写进启动参数（`DEFAULT_TRANSLATION_MODEL` 读它），
-// 不在就不写：设置页里路径是空的，用户自己选。
-val desktopTranslateModel: String = providers.gradleProperty("feedhub.translate.model")
-    .getOrElse(rootProject.file("deps/translate/HY-MT1.5-1.8B-Q4_K_M.gguf").path)
-val desktopTranslateServer: String = providers.gradleProperty("feedhub.translate.server")
-    .getOrElse(rootProject.file("deps/translate/llama.cpp/llama-server").path)
+// ---------------------------------------------------------------------------
+// 桌面本地翻译（Project Bergamot 进程内轻量英译中引擎 + Firefox enzh 48 MB 量化模型）
+// ---------------------------------------------------------------------------
+val desktopTranslateModelDir: String = providers.gradleProperty("feedhub.translateModelDir")
+    .getOrElse(rootProject.file("deps/translate/bergamot-enzh").path)
+val desktopBergamotSrcDir: String = providers.gradleProperty("feedhub.bergamotSrcDir")
+    .getOrElse(rootProject.file("deps/bergamot-src").path)
+val desktopTranslateJniPrebuilt: String = providers.gradleProperty("feedhub.bergamotLinuxDir")
+    .getOrElse(layout.buildDirectory.dir("bergamot-native/linux-x86_64").get().asFile.absolutePath)
+val desktopTranslateModelSha256 = mapOf(
+    "model.enzh.intgemm.alphas.bin" to "4e5accc141373565ddc8fa1565bceaa8d0c3482a82cab8131c719ebcc6c2157c",
+    "lex.50.50.enzh.s2t.bin" to "8575d8daa10e2dbff316dcdf8e1ce475357bcc2c92bdc63b736a2d5add22f681",
+    "srcvocab.enzh.spm" to "bd9b65504acc6d9726dd281f7defc2adb7c2c22d0688fe2f84697de25197c8c5",
+    "trgvocab.enzh.spm" to "aded6993c36e440284d11cec3f6b8aef9c0e43188a772d80be342a713adf223d",
+)
+val desktopTranslatePrefixSha256 = "af526c47425bb31b4e7b79ec975c1bb752a34ba21951237d51b965e879d9d51a"
+val desktopTranslateDir = layout.buildDirectory.dir("desktop-translate")
+
+val stageDesktopTranslate = tasks.register("stageDesktopTranslate") {
+    group = "distribution"
+    description = "编译/放入 libfeedhub_bergamot.so + 校验拷贝 Firefox enzh 模型进 App resources（基础版清空跳过）"
+    val out = desktopTranslateDir
+    val resourcesOut = appResources.map { it.dir("common/translate-bergamot") }
+    val buildScript = rootProject.file("tools/translate/build-bergamot.sh")
+    val jniSrcDir = rootProject.file("tools/translate/bergamot_jni")
+    val modelFiles = desktopTranslateModelSha256.keys.associateWith { name ->
+        file("$desktopTranslateModelDir/$name")
+    }
+    val prefixCandidates = listOf(
+        file("$desktopTranslateModelDir/nonbreaking_prefix.en"),
+        file("$desktopBergamotSrcDir/inference/3rd_party/ssplit-cpp/nonbreaking_prefixes/nonbreaking_prefix.en"),
+    )
+    inputs.property("translateEnabled", translateEnabled)
+    if (translateEnabled) {
+        inputs.file(buildScript)
+        inputs.dir(jniSrcDir)
+        inputs.files(modelFiles.values.filter { it.isFile })
+        prefixCandidates.firstOrNull { it.isFile }?.let { inputs.file(it) }
+        inputs.property("modelDir", desktopTranslateModelDir)
+        inputs.property("sha256", desktopTranslateModelSha256.values + desktopTranslatePrefixSha256)
+    }
+    outputs.dir(out)
+    outputs.dir(resourcesOut)
+    doLast {
+        val dir = out.get().asFile.apply { deleteRecursively(); mkdirs() }
+        val resDir = resourcesOut.get().asFile.apply { deleteRecursively(); mkdirs() }
+        if (!translateEnabled) {
+            logger.lifecycle("桌面本地翻译：基础版构建（未传 -Pfeedhub.translate=true），不打包 Bergamot 运行库与翻译模型")
+            return@doLast
+        }
+
+        val jniOutDir = file(desktopTranslateJniPrebuilt)
+        val jniLib = File(jniOutDir, "libfeedhub_bergamot.so")
+        val newestSrc = (jniSrcDir.walkTopDown().filter { it.isFile }.toList() + buildScript)
+            .maxOfOrNull { it.lastModified() } ?: 0L
+        val needBuild = !providers.gradleProperty("feedhub.bergamotLinuxDir").isPresent &&
+            (!jniLib.isFile || jniLib.lastModified() < newestSrc)
+        if (needBuild) {
+            val pb = ProcessBuilder("bash", buildScript.absolutePath, "linux-x86_64")
+                .directory(rootProject.projectDir)
+                .redirectErrorStream(true)
+            pb.environment()["OUT_LINUX"] = jniOutDir.absolutePath
+            pb.environment()["BERGAMOT_SRC"] = file(desktopBergamotSrcDir).absolutePath
+            val proc = pb.start()
+            val buildLog = proc.inputStream.bufferedReader().readText()
+            val code = proc.waitFor()
+            if (code != 0) {
+                logger.warn("桌面本地翻译：编译 libfeedhub_bergamot.so 失败（退出码 $code）：\n$buildLog")
+            }
+        }
+
+        val staged = linkedMapOf<String, File>()
+        if (jniLib.isFile && jniLib.length() > 0L) {
+            staged["libfeedhub_bergamot.so"] = jniLib
+        } else {
+            logger.warn("桌面本地翻译：未找到 $jniLib，这次不带桌面翻译运行库")
+        }
+
+        for ((name, file) in modelFiles) {
+            val want = desktopTranslateModelSha256.getValue(name)
+            if (!file.isFile) {
+                logger.warn("桌面本地翻译：找不到 $file，这次不带翻译模型")
+                continue
+            }
+            val actual = sha256Of(file)
+            check(actual == want) {
+                "桌面本地翻译：$name 的 sha256 不对（期望 $want，实际 $actual，$file）"
+            }
+            staged[name] = file
+        }
+
+        prefixCandidates.firstOrNull { it.isFile }?.let { prefix ->
+            val actual = sha256Of(prefix)
+            check(actual == desktopTranslatePrefixSha256) {
+                "桌面本地翻译：nonbreaking_prefix.en 的 sha256 不对（期望 $desktopTranslatePrefixSha256，实际 $actual）"
+            }
+            staged["nonbreaking_prefix.en"] = prefix
+        }
+
+        var total = 0L
+        for ((name, from) in staged) {
+            from.copyTo(File(dir, name), overwrite = true)
+            File(dir, name).copyTo(File(resDir, name), overwrite = true)
+            total += from.length()
+        }
+        if (staged.size < 5) {
+            logger.warn("桌面本地翻译：仅收集到 ${staged.size} 个文件（需要运行库 + 4 个模型文件），App 里本地翻译将置灰不可用")
+        } else {
+            logger.lifecycle("桌面本地翻译：已放入 ${staged.size} 个文件，共 ${total / 1024 / 1024} MB → $resDir")
+        }
+    }
+}
+
+tasks.matching { it.name == "packageDeb" || it.name.startsWith("prepareAppResources") }
+    .configureEach { dependsOn(stageDesktopTranslate) }
+
+val desktopTranslatePath = desktopTranslateDir.map { it.asFile.absolutePath }
+tasks.withType<Test>().configureEach {
+    dependsOn(stageDesktopTranslate)
+    systemProperty("feedhub.translate.bergamot.dir", desktopTranslatePath.get())
+}
+tasks.matching { it.name == "screenshot" || it.name == "devMain" }.configureEach {
+    dependsOn(stageDesktopTranslate)
+    this as JavaExec
+    systemProperty("feedhub.translate.bergamot.dir", desktopTranslatePath.get())
+}
 
 compose.desktop {
     application {
         mainClass = "feedhub.app.MainKt"
-        jvmArgs += listOfNotNull(
-            desktopTranslateModel.takeIf { File(it).isFile }?.let { "-Dfeedhub.translate.model=$it" },
-            desktopTranslateServer.takeIf { File(it).isFile }?.let { "-Dfeedhub.translate.server=$it" },
-        )
         // JCEF 的 OSR（离屏渲染）在 JDK 16+ 要打开这几个包，见 jcefmaven README。
         // 打进 deb 的启动器也会带这些 --add-exports。
         jvmArgs += listOf(
@@ -502,7 +669,7 @@ compose.desktop {
         nativeDistributions {
             targetFormats(TargetFormat.Deb)
             packageName = "feedhub"
-            packageVersion = "0.1.0"
+            packageVersion = "0.1.1"
             description = "多平台聚合信息流"
             vendor = "feedhub"
             // jpackage 默认只打 java.base 等少数模块；OkHttp / Coil 要用到这些

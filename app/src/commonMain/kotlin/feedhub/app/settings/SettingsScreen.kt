@@ -336,14 +336,14 @@ internal class SettingsNav {
 private fun SettingsMenu(graph: AppGraph, nav: SettingsNav, selected: SettingsRoute?) {
     Column(Modifier.padding(horizontal = 12.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Text("设置", style = MaterialTheme.typography.titleLarge, modifier = Modifier.padding(start = 4.dp, top = 4.dp, bottom = 4.dp))
-        for (section in SettingsSection.entries) {
+        for (section in SettingsSection.entries.filter { it != SettingsSection.TRANSLATION || graph.showTranslation }) {
             val route = SettingsRoute.Section(section)
             SettingsMenuRow(section.title, section.summary, section.icon, selected == route) { nav.open(route) }
         }
         Spacer(Modifier.size(4.dp))
         SettingsMenuRow(
             "进阶设置",
-            advancedSummary(graph.showBuiltinProxy),
+            advancedSummary(graph.showBuiltinProxy, showTranslation = graph.showTranslation),
             Icons.Outlined.Build,
             // 宽屏在进阶里时左边已经是进阶的列表，这里就不该再高亮（两个列表不会同时出现）
             selected is SettingsRoute.Advanced || selected == SettingsRoute.AdvancedList,
@@ -380,10 +380,18 @@ private fun AdvancedMenu(
                 if (onBack != null) TextButton(onClick = onBack) { Text("‹ 设置") }
             }
         }
-        // 「对外接口（agent）」只有桌面组装有（安卓没有这个接口，见 AppGraph.appApi）
-        for (section in AdvancedSection.entries.filter { it != AdvancedSection.API || graph.appApi != null }) {
+        // 「对外接口（agent）」只有桌面组装有；「翻译（进阶）」只有带翻译功能的构建才列（基础版不摆无效项）
+        for (section in AdvancedSection.entries.filter {
+            (it != AdvancedSection.API || graph.appApi != null) &&
+                (it != AdvancedSection.TRANSLATION || graph.showTranslation)
+        }) {
             val route = SettingsRoute.Advanced(section)
-            SettingsMenuRow(section.title, section.summary, section.icon, selected == route) { nav.open(route) }
+            val summary = if (section == AdvancedSection.BEHAVIOR && !graph.showEmbedding) {
+                "曝光与停留统计、清除"
+            } else {
+                section.summary
+            }
+            SettingsMenuRow(section.title, summary, section.icon, selected == route) { nav.open(route) }
         }
         Hint(
             if (graph.showBuiltinProxy) "普通用户用不上的东西都放在这一层：内置代理核心、指定代理明细，以及一些偏调试的开关。"
@@ -398,8 +406,9 @@ private fun AdvancedMenu(
  *
  * 一行放不下就省略（[SettingsMenuRow] 只给一行），所以挑最能说明"里面有什么"的几样。
  */
-internal fun advancedSummary(showBuiltinCore: Boolean): String =
-    (if (showBuiltinCore) "内置代理核心、指定代理明细、" else "指定代理明细、") + "首页排序、翻译路径、行为数据"
+internal fun advancedSummary(showBuiltinCore: Boolean, showTranslation: Boolean = true): String =
+    (if (showBuiltinCore) "内置代理核心、指定代理明细、" else "指定代理明细、") +
+        if (showTranslation) "首页排序、翻译路径、行为数据" else "首页排序、行为数据"
 
 /** 分组列表里的一行：图标 + 名称 + 一行摘要 + `›`。 */
 @Composable

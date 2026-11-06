@@ -1,0 +1,6 @@
+{
+  global:
+    Java_feedhub_app_translate_BergamotNative_*;
+  local:
+    *;
+};

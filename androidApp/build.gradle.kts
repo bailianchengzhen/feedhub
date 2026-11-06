@@ -1,11 +1,14 @@
 import java.security.MessageDigest
 
 /**
- * 本地向量走 NPU：
- * - `true` 时把 npu-research 里数值验过的 w8a16 固定形状模型（`[8,32]`）拷进 `assets/embed-npu/`，
- *   并保留 / 声明 QNN 需要的那几个 `.so`（依赖由 `:app` 的安卓侧带进来）；
+ * 可选 AI 能力编译开关（默认全部 `false` = **纯净基础版**：无 NPU / ONNX 向量模型、无 GGUF / llama-server）：
+ * - `-Pfeedhub.embed=true`：打包 CPU 向量模型（`assets/embed/`）；
+ * - `-Pfeedhub.embedNpu=true`：打包 HTP NPU 向量模型 + 封面视觉图（自动隐含 `embedEnabled = true`）；
+ * - `-Pfeedhub.translate=true`：打包 GGUF 翻译模型（`assets/translate/`）与 `libllamaserver.so`。
  */
 val embedNpu: Boolean = providers.gradleProperty("feedhub.embedNpu").orNull == "true"
+val embedEnabled: Boolean = embedNpu || providers.gradleProperty("feedhub.embed").orNull == "true"
+val translateEnabled: Boolean = providers.gradleProperty("feedhub.translate").orNull == "true"
 
 // 安卓 APK 的外壳：只有 manifest / applicationId / 资源。界面、状态、平台实现全在 :app（它的安卓侧是
 // com.android.kotlin.multiplatform.library 出的 AAR）。
@@ -34,8 +37,8 @@ android {
         // 所以只有带了 `-Pfeedhub.embedNpu=true` 的包把 minSdk 提到 27；不带的包仍然是 26，
         minSdk = if (embedNpu) 27 else libs.versions.android.min.sdk.get().toInt()
         targetSdk = libs.versions.android.target.sdk.get().toInt()
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = 2
+        versionName = "0.1.1"
 
         // ABI：真机（arm64-v8a），模拟器是 x86_64，
         // 别的 ABI（armeabi-v7a / x86）的 .so 打进去也没人用，只是白占体积。
@@ -96,14 +99,13 @@ android {
     // 本地向量：外部权重 `.onnx_data` **不压缩**。ORT 虽然是从 noBackupFilesDir 里
     // 拷出来的那份文件加载（不是从 APK 里 mmap），但不压缩能让第一次解包更快、也避免大文件在 APK 里被压坏
     androidResources {
-        noCompress += "onnx_data"
+        if (embedEnabled) noCompress += "onnx_data"
         // ONNX external data）。两个都**不压缩**：第一次把权重拷到 App 私有目录时不用现场解压
         // 271 MB，也少一次 CPU 峰值。
         if (embedNpu) noCompress += listOf("onnx", "weights")
-        // 翻译模型：1.1 GB 的 GGUF **不压缩**。
-        // llama-server 要文件路径，运行时得从 assets 拷一份到私有目录；压着的话这次拷贝要多解 1.1 GB
-        // （手机上几秒 CPU 满载），不压则是一次纯 IO 复制。APK 体积差不多（gguf 本身压不动）。
-        noCompress += "gguf"
+        // 翻译模型（Project Bergamot 英译中离线模型，共约 48 MB）：`.bin` 与 `.spm` 不压缩，
+        // 首次使用时从 assets 纯 IO 拷入 noBackupFilesDir（避免在手机上额外做 ZIP 流式解压）。
+        if (translateEnabled) noCompress += listOf("bin", "spm")
     }
 
     // 别把桌面包里那些只给 JVM 用的 META-INF 带进 APK
@@ -211,55 +213,45 @@ val embedFiles = listOf(
     "embed/tokenizer.json" to "tokenizer.json",
 )
 val embedAssets = layout.buildDirectory.dir("embed-assets")
-val stageEmbedModel = tasks.register("stageEmbedModel") {
-    group = "build"
-    description = "把 EmbeddingGemma 2 的图 / 权重 / 词表拷成 assets（没有模型目录就出一份空的，照常出包）"
-    val src = file(embedModelDir)
-    inputs.property("modelDir", src.absolutePath)
-    // NPU 包不带 CPU 模型：这一位必须算进输入，不然先打普通包 / 跑 test 之后再打 NPU 包，这一步被判 UP-TO-DATE，
-    // 上一次拷进来的 CPU 模型（约 200 MB）原样留在 assets 里。
-    inputs.property("embedNpu", embedNpu)
-    inputs.files(embedFiles.map { (_, from) -> File(src, from) })
-    outputs.dir(embedAssets)
-    doLast {
-        val root = embedAssets.get().asFile
-        val out = root.resolve("embed")
-        out.deleteRecursively()
-        // 省掉 246 MB；NPU 真用不了时本地向量显示"不可用"，不回退。
-        if (embedNpu) {
+if (embedEnabled && !embedNpu) {
+    val stageEmbedModel = tasks.register("stageEmbedModel") {
+        group = "build"
+        description = "把 EmbeddingGemma 2 的图 / 权重 / 词表拷成 assets（没有模型目录就出一份空的，照常出包）"
+        val src = file(embedModelDir)
+        inputs.property("modelDir", src.absolutePath)
+        inputs.property("embedNpu", embedNpu)
+        inputs.files(embedFiles.map { (_, from) -> File(src, from) }.filter { it.isFile })
+        outputs.dir(embedAssets)
+        doLast {
+            val root = embedAssets.get().asFile
+            val out = root.resolve("embed")
+            out.deleteRecursively()
+            val missing = embedFiles.map { (_, from) -> File(src, from) }.filterNot { it.isFile }
+            if (missing.isNotEmpty()) {
+                logger.lifecycle(
+                    "本地向量：跳过（${src.absolutePath} 里缺 ${missing.joinToString { it.name }}）。" +
+                        "这次 APK 不带模型，App 里显示「未包含模型」，其它功能不受影响。",
+                )
+                out.mkdirs()
+                return@doLast
+            }
             out.mkdirs()
-            logger.lifecycle(
-                "本地向量：这个包带了 NPU（-Pfeedhub.embedNpu=true），**不拷 CPU 的 q4 模型**（assets/embed/ 留空，" +
-                    "省掉约 174 MB 的图 + 权重；词表 tokenizer.json 由 stageNpuModel 放进 assets/embed-npu/，" +
-                    "NPU 用不了时本地向量不可用，不回退）",
-            )
-            return@doLast
+            var total = 0L
+            for ((to, from) in embedFiles) {
+                val target = File(root, to)
+                File(src, from).copyTo(target, overwrite = true)
+                total += target.length()
+            }
+            logger.lifecycle("本地向量：已放进 assets ${embedFiles.size} 个文件，共 ${total / 1024 / 1024} MB（来自 ${src.absolutePath}）")
         }
-        val missing = embedFiles.map { (_, from) -> File(src, from) }.filterNot { it.isFile }
-        if (missing.isNotEmpty()) {
-            logger.lifecycle(
-                "本地向量：跳过（${src.absolutePath} 里缺 ${missing.joinToString { it.name }}）。" +
-                    "这次 APK 不带模型，App 里显示「未包含模型」，其它功能不受影响。",
-            )
-            out.mkdirs()
-            return@doLast
-        }
-        out.mkdirs()
-        var total = 0L
-        for ((to, from) in embedFiles) {
-            val target = File(root, to)
-            File(src, from).copyTo(target, overwrite = true)
-            total += target.length()
-        }
-        logger.lifecycle("本地向量：已放进 assets ${embedFiles.size} 个文件，共 ${total / 1024 / 1024} MB（来自 ${src.absolutePath}）")
     }
+    // 让 AGP 从 build 目录里那份 assets 取（只有开启 -Pfeedhub.embed=true 且非 NPU 包时挂入，基础版完全不打进 APK）
+    android.sourceSets["main"].assets.srcDir(embedAssets.get().asFile)
+    tasks.matching { it.name.startsWith("merge") && it.name.endsWith("Assets") }.configureEach {
+        dependsOn(stageEmbedModel)
+    }
+    tasks.matching { it.name == "preBuild" }.configureEach { dependsOn(stageEmbedModel) }
 }
-// 让 AGP 从 build 目录里那份 assets 取（源码树里不放这几个大文件）
-android.sourceSets["main"].assets.srcDir(embedAssets.get().asFile)
-tasks.matching { it.name.startsWith("merge") && it.name.endsWith("Assets") }.configureEach {
-    dependsOn(stageEmbedModel)
-}
-tasks.matching { it.name == "preBuild" }.configureEach { dependsOn(stageEmbedModel) }
 
 // 本地向量走 NPU：HTP 版模型
 // 只有 `-Pfeedhub.embedNpu=true` 才拷：`npu-research` 里数值验过的 **w8a16 + int8 词表**、固定形状 `[8,L]`、
@@ -511,6 +503,28 @@ val cargoBuildAndroid = tasks.register<Exec>("cargoBuildAndroid") {
         // "incompatible with aarch64linux"）。另外 `btls-sys` 的 cmake 缓存**会残留**：
         // 换 ABI / 换 NDK 之后要先删 `target/<triple>/release/build/btls-sys-*`。
         environment("ANDROID_NDK_HOME", resolveNdk().absolutePath)
+        // 抹掉编译机绝对路径（Rust panic Location 与 C/C++ BoringSSL/SQLite 的 __FILE__），保证产物可复现且不带本机目录名
+        val homeDir = System.getProperty("user.home")
+        val cargoHome = System.getenv("CARGO_HOME") ?: "$homeDir/.cargo"
+        val rustupHome = System.getenv("RUSTUP_HOME") ?: "$homeDir/.rustup"
+        val rootPath = rootProject.projectDir.absolutePath
+        val remapCFlags = listOf(
+            "-ffile-prefix-map=$rootPath=/src",
+            "-ffile-prefix-map=$cargoHome=/cargo",
+            "-ffile-prefix-map=$homeDir=/home/builder",
+        ).joinToString(" ")
+        environment("CFLAGS", remapCFlags)
+        environment("CXXFLAGS", remapCFlags)
+        environment(
+            "CARGO_ENCODED_RUSTFLAGS",
+            listOf(
+                "-C", "link-arg=-Wl,-z,max-page-size=16384",
+                "--remap-path-prefix=$rootPath=/src",
+                "--remap-path-prefix=$cargoHome=/cargo",
+                "--remap-path-prefix=$rustupHome=/rustup",
+                "--remap-path-prefix=$homeDir=/home/builder",
+            ).joinToString("\u001f"),
+        )
     }
     inputs.files(
         fileTree(rustDir.resolve("crates")) {
@@ -645,35 +659,24 @@ tasks.matching { it.name.contains("JniLibFolders") }.configureEach {
 }
 android.sourceSets["main"].jniLibs.srcDir(rustJniLibs.get().asFile)
 
-// 手机上的本地翻译
-//
-// 两样东西进包，都由**构建时**从盘上取（不进 git）：
-//
-// 1. **llama-server 可执行文件**（llama.cpp **b11700**，NDK r29 交叉编译，静态单文件）：
-//    `tools/translate/build-android.sh` 的产物。**CPU + Adreno OpenCL + Hexagon HTP 三个后端编在同一个
-//    二进制里**——
-//    后端由运行时的 `--device` / `-ngl` / `--split-mode` 挑（Rust `translate::device`），不是按文件名分叉。
-//    按 sing-box 的老办法放进 jniLibs —— Android 只允许执行 `nativeLibraryDir` 下的文件，
-//    `.so` 这个后缀是 AGP / 安装器把它解出来的唯一条件（它其实是个可执行文件，见那个脚本的文件头）。
-//    arm64-v8a 三个文件都要：
-//      * `libllamaserver.so`（13.4 MB，那个可执行文件，CPU/OpenCL/HTP 都在里面）；
-//      * `libggml-htp-v79.so`（809 KB，**DSP 侧的 ELF**，给 Hexagon 用，**不能 strip**）；
-//      * `libOpenCL.so`（309 KB，Khronos 的 ICD loader，手机上没有可用的系统 loader 时用它）。
-//    x86_64（模拟器）只出 `libllamaserver.so`：模拟器没有 Adreno / Hexagon，出来也是白占地方。
-// 2. **GGUF 模型**（HY-MT1.5-1.8B **Q4_0**，1.03 GiB）→ `assets/translate/`。llama-server 要**文件路径**，
-//    所以运行时从 assets 流式拷到 App 私有目录（见 `AndroidTranslationEngine`）；`androidResources.noCompress`
-//    里要带上 `gguf`，否则 AGP 会把它压进 APK，拷出来的时候要多解一次 1 GiB。
-//
-// **只有 Q4_0**：Hexagon 的 HTP 后端只吃 Q4_0，而 FLORES-200 上 Q4_0 两个方向的 chrF++ 都不比
-// Q4_K_M 差，
-// 所以不再打第二份 Q4_K_M——一份模型同时喂 NPU / GPU / CPU，APK 也省 340 MB。
-//
-// 缺任何一样都**照常出包**（只是不带翻译：界面显示「未包含翻译模型」，`AndroidTranslationEngine.available`
-// 为 false），和本地向量那套一模一样的取舍。
-val translateModelPath: String = providers.gradleProperty("feedhub.translateModel")
-    .getOrElse(rootProject.file("deps/translate/HY-MT1.5-1.8B-Q4_0.gguf").path)
-val translateModelSha256: String = providers.gradleProperty("feedhub.translateModel.sha256")
-    .getOrElse("38dee601e7e8d97211676729d995940af82b0df19171e807bb814041a097ab70")
+// ---------------------------------------------------------------------------
+// 手机上的本地翻译（Project Bergamot 进程内轻量英译中引擎 + Firefox enzh 48 MB 量化模型）
+// ---------------------------------------------------------------------------
+// 默认基础版（未传 -Pfeedhub.translate=true）0 字节不打入 APK；
+// 开启 `-Pfeedhub.translate=true` 时打入两样东西（均不进 git）：
+// 1. `libfeedhub_bergamot.so`（arm64-v8a 与 x86_64，16 KB 页对齐，由 `tools/translate/build-bergamot.sh` 交叉编译）；
+// 2. Firefox `enzh` base-memory 模型四件套 + `nonbreaking_prefix.en`（约 48 MB，SHA-256 校验后放入 `assets/translate/enzh/`）。
+val translateModelDir: String = providers.gradleProperty("feedhub.translateModelDir")
+    .getOrElse(rootProject.file("deps/translate/bergamot-enzh").path)
+val bergamotSrcDir: String = providers.gradleProperty("feedhub.bergamotSrcDir")
+    .getOrElse(rootProject.file("deps/bergamot-src").path)
+val translateModelSha256 = mapOf(
+    "model.enzh.intgemm.alphas.bin" to "4e5accc141373565ddc8fa1565bceaa8d0c3482a82cab8131c719ebcc6c2157c",
+    "lex.50.50.enzh.s2t.bin" to "8575d8daa10e2dbff316dcdf8e1ce475357bcc2c92bdc63b736a2d5add22f681",
+    "srcvocab.enzh.spm" to "bd9b65504acc6d9726dd281f7defc2adb7c2c22d0688fe2f84697de25197c8c5",
+    "trgvocab.enzh.spm" to "aded6993c36e440284d11cec3f6b8aef9c0e43188a772d80be342a713adf223d",
+)
+val translatePrefixSha256 = "af526c47425bb31b4e7b79ec975c1bb752a34ba21951237d51b965e879d9d51a"
 
 fun sha256Of(file: File): String {
     val digest = MessageDigest.getInstance("SHA-256")
@@ -689,128 +692,125 @@ fun sha256Of(file: File): String {
 }
 
 val translateAssets = layout.buildDirectory.dir("translate-assets")
-val stageTranslationModel = tasks.register("stageTranslationModel") {
-    group = "build"
-    description = "把 GGUF 翻译模型拷成 assets/translate/（校验 sha256；没有就出一份空的，照常出包）"
-    val src = file(translateModelPath)
-    inputs.property("model", src.absolutePath)
-    inputs.property("sha256", translateModelSha256)
-    inputs.files(if (src.isFile) listOf(src) else emptyList())
-    outputs.dir(translateAssets)
-    doLast {
-        val out = translateAssets.get().asFile.resolve("translate")
-        out.deleteRecursively()
-        out.mkdirs()
-        if (!src.isFile) {
-            logger.lifecycle(
-                "翻译：跳过（找不到模型 $src）。这次 APK 不带翻译模型，App 里显示「未包含翻译模型」，" +
-                    "其它功能不受影响。用 -Pfeedhub.translateModel=<gguf 路径> 指定。",
-            )
-            return@doLast
-        }
-        val actual = sha256Of(src)
-        check(actual == translateModelSha256.lowercase()) {
-            "翻译模型的 sha256 不对：期望 $translateModelSha256，实际 $actual（$src）。" +
-                "换模型就同时改 -Pfeedhub.translateModel.sha256。"
-        }
-        val target = File(out, "model.gguf")
-        src.copyTo(target, overwrite = true)
-        logger.lifecycle(
-            "翻译：已放进 assets/translate/model.gguf（${target.length() / 1024 / 1024} MB，" +
-                "sha256 校验通过，来自 ${src.absolutePath}）",
+val bergamotJniDir: String = providers.gradleProperty("feedhub.bergamotAndroidDir")
+    .getOrElse("$projectDir/build/bergamot-jniLibs")
+// 不要和 `bergamotJniDir` 用同一个目录，防止 Copy 的 from/into 重合截断文件
+val bergamotJniLibsStaged = layout.buildDirectory.dir("bergamot-jnilibs-staged")
+
+if (translateEnabled) {
+    val stageTranslationModel = tasks.register("stageTranslationModel") {
+        group = "build"
+        description = "把 Firefox Bergamot enzh 翻译模型拷成 assets/translate/enzh/（校验 sha256；缺失时出空目录照常出包）"
+        val srcDir = file(translateModelDir)
+        val modelFiles = translateModelSha256.keys.associateWith { File(srcDir, it) }
+        val prefixCandidates = listOf(
+            File(srcDir, "nonbreaking_prefix.en"),
+            file("$bergamotSrcDir/inference/3rd_party/ssplit-cpp/nonbreaking_prefixes/nonbreaking_prefix.en"),
         )
-    }
-}
-android.sourceSets["main"].assets.srcDir(translateAssets.get().asFile)
-tasks.matching { it.name.startsWith("merge") && it.name.endsWith("Assets") }.configureEach {
-    dependsOn(stageTranslationModel)
-}
-tasks.matching { it.name == "preBuild" }.configureEach { dependsOn(stageTranslationModel) }
-
-// llama-server：`tools/translate/build-android.sh` 的产物，按 ABI 目录放进 jniLibs。
-// **不挂 preBuild**（和 Rust 那条一样）：它要 NDK + cmake + 一个第三方源码树，
-// `./gradlew test` 不该被它拖住。挂 JniLibFolders —— 只有真装机 / 打包才需要它。
-//
-// **为什么这里再起一次编译**：`build/` 目录通常不随源码同步到远端构建机，
-// 所以打包在远端的跑道上跑时，本机编好的那三个 `.so` 根本不在对面。让 Gradle 自己调那个脚本，
-// 两端就都成立：本机已经编过的一秒跳过（`outputs` 命中），远端发现没有就现编。
-// 想用自己编的那份：`-Pfeedhub.llamaServerDir=<目录>`（那个目录里的 `*/*.so` 直接进包，不现编）。
-val llamaServerDir: String = providers.gradleProperty("feedhub.llamaServerDir")
-    .getOrElse("$projectDir/build/llama-server-jniLibs")
-// **不要**和 `llamaServerDir` 用同一个目录：`Copy` 的 from / into 是同一个目录时，
-// 它会一边读一边把自己的源文件截断成 0 字节。这里刻意多一层 `-staged`。
-val llamaServerJniLibs = layout.buildDirectory.dir("llama-server-jnilibs-staged")
-
-/**
- * 现编 llama-server（arm64：CPU + OpenCL + Hexagon 一份二进制；x86_64：只有 CPU 那份）。
- *
- * `onlyIf` 看的是**产物在不在**：本机编过就直接跳过。要强制重编就删 `build/llama-server-jniLibs`。
- * 用 `-Pfeedhub.llamaServerDir=` 指了别的目录时整条不跑（用用户给的）。
- */
-val buildLlamaServerAndroid = tasks.register<Exec>("buildLlamaServerAndroid") {
-    group = "build"
-    description = "交叉编译 llama-server（arm64-v8a 带 OpenCL + Hexagon，x86_64 只 CPU；需要 NDK r29 + cmake + llama.cpp b11700）"
-    workingDir = rootDir
-    commandLine("bash", "tools/translate/build-android.sh", "arm64-v8a", "x86_64")
-    environment("OUT", file(llamaServerDir).absolutePath)
-    inputs.files(
-        rootDir.resolve("tools/translate/build-android.sh"),
-    )
-    outputs.dir(file(llamaServerDir))
-    // 用户显式给了目录 → 用人家的，不现编
-    onlyIf { !providers.gradleProperty("feedhub.llamaServerDir").isPresent }
-    // 只有"要进包的变体"都齐了才算做过（改了脚本 / 换 ABI 时能自己补编）
-    outputs.upToDateWhen {
-        file("$llamaServerDir/arm64-v8a/libllamaserver.so").isFile &&
-            file("$llamaServerDir/arm64-v8a/libggml-htp-v79.so").isFile &&
-            file("$llamaServerDir/arm64-v8a/libOpenCL.so").isFile &&
-            file("$llamaServerDir/x86_64/libllamaserver.so").isFile
-    }
-}
-
-val stageLlamaServerAndroid = tasks.register<Copy>("stageLlamaServerAndroid") {
-    group = "build"
-    description = "把交叉编译好的 llama-server（CPU + OpenCL + Hexagon 三个文件）拷进 jniLibs"
-    dependsOn(buildLlamaServerAndroid)
-    val root = file(llamaServerDir)
-    inputs.property("dir", root.absolutePath)
-    inputs.files(
-        fileTree(root) { include("*/*.so") },
-    )
-    outputs.dir(llamaServerJniLibs)
-    from(root) { include("*/*.so") }
-    into(llamaServerJniLibs)
-    doLast {
-        val out = llamaServerJniLibs.get().asFile
-        val found = fileTree(out) { include("*/*.so") }.files
-        if (found.isEmpty()) {
-            logger.lifecycle(
-                "翻译：这个包里**没有** llama-server（$root 里没有 .so）。先跑 " +
-                    "tools/translate/build-android.sh，或者用 -Pfeedhub.llamaServerDir= 指过去。" +
-                    "App 里翻译会显示「未包含翻译引擎」。",
-            )
-        } else {
-            found.sortedBy { it.absolutePath }.forEach {
-                logger.lifecycle("翻译：已放进 jniLibs ${it.parentFile.name}/${it.name}（${it.length() / 1024 / 1024} MB）")
-            }
-            // arm64 缺了 HTP skel / OpenCL loader 的话，NPU / GPU 那两档在真机上会以一种很难读的方式失败
-            // （`ggml-hex` 打不开 session / `clGetPlatformIDs` 返回 0 个平台）。这里提前说一声，
-            // 但不 fail（x86_64 的模拟器包本来就只有 CPU 那份，那是正常的）。
-            val missing = listOf("libggml-htp-v79.so", "libOpenCL.so")
-                .filter { !File(out, "arm64-v8a/$it").isFile }
-            if (File(out, "arm64-v8a/libllamaserver.so").isFile && missing.isNotEmpty()) {
+        inputs.property("modelDir", srcDir.absolutePath)
+        inputs.property("sha256", translateModelSha256.toSortedMap().toString() + translatePrefixSha256)
+        inputs.files(modelFiles.values.filter { it.isFile })
+        prefixCandidates.firstOrNull { it.isFile }?.let { inputs.file(it) }
+        outputs.dir(translateAssets)
+        doLast {
+            val out = translateAssets.get().asFile.resolve("translate/enzh")
+            translateAssets.get().asFile.resolve("translate").deleteRecursively()
+            out.mkdirs()
+            val missing = modelFiles.filterValues { !it.isFile }.keys
+            if (missing.isNotEmpty()) {
                 logger.lifecycle(
-                    "翻译：arm64 包缺 ${missing.joinToString(" / ")}——NPU / GPU 那两档起不来，" +
-                        "会自动降级到 CPU（想带上就重跑 tools/translate/build-android.sh arm64-v8a）。",
+                    "翻译：跳过（${srcDir.absolutePath} 缺少 ${missing.joinToString()}）。" +
+                        "这次 APK 不带翻译模型，App 里显示「未包含翻译模型」，其它功能不受影响。",
                 )
+                return@doLast
+            }
+            var total = 0L
+            for ((name, src) in modelFiles.toSortedMap()) {
+                val expected = translateModelSha256.getValue(name)
+                val actual = sha256Of(src)
+                check(actual == expected) {
+                    "翻译模型 $name 的 sha256 不对：期望 $expected，实际 $actual（$src）"
+                }
+                val dst = File(out, name)
+                src.copyTo(dst, overwrite = true)
+                total += dst.length()
+            }
+            prefixCandidates.firstOrNull { it.isFile }?.let { prefix ->
+                val actual = sha256Of(prefix)
+                check(actual == translatePrefixSha256) {
+                    "nonbreaking_prefix.en 的 sha256 不对：期望 $translatePrefixSha256，实际 $actual"
+                }
+                val dst = File(out, "nonbreaking_prefix.en")
+                prefix.copyTo(dst, overwrite = true)
+                total += dst.length()
+            }
+            logger.lifecycle(
+                "翻译：已放进 assets/translate/enzh/（共 ${total / 1024 / 1024} MB，sha256 校验通过，来自 ${srcDir.absolutePath}）",
+            )
+        }
+    }
+    android.sourceSets["main"].assets.srcDir(translateAssets.get().asFile)
+    tasks.matching { it.name.startsWith("merge") && it.name.endsWith("Assets") }.configureEach {
+        dependsOn(stageTranslationModel)
+    }
+    tasks.matching { it.name == "preBuild" }.configureEach { dependsOn(stageTranslationModel) }
+
+    val buildBergamotAndroid = tasks.register<Exec>("buildBergamotAndroid") {
+        group = "build"
+        description = "交叉编译 libfeedhub_bergamot.so（arm64-v8a + x86_64，16 KB 页对齐）"
+        workingDir = rootDir
+        commandLine("bash", "tools/translate/build-bergamot.sh", "arm64-v8a", "x86_64")
+        environment("OUT_ANDROID", file(bergamotJniDir).absolutePath)
+        environment("BERGAMOT_SRC", file(bergamotSrcDir).absolutePath)
+        doFirst {
+            environment("NDK", resolveNdk().absolutePath)
+        }
+        inputs.files(
+            rootDir.resolve("tools/translate/build-bergamot.sh"),
+            fileTree(rootDir.resolve("tools/translate/bergamot_jni")),
+        )
+        outputs.dir(file(bergamotJniDir))
+        onlyIf { !providers.gradleProperty("feedhub.bergamotAndroidDir").isPresent }
+        outputs.upToDateWhen {
+            val newestSrc = (
+                rootDir.resolve("tools/translate/bergamot_jni").walkTopDown().filter { it.isFile }.toList() +
+                    rootDir.resolve("tools/translate/build-bergamot.sh")
+                ).maxOfOrNull { it.lastModified() } ?: 0L
+            val arm64 = file("$bergamotJniDir/arm64-v8a/libfeedhub_bergamot.so")
+            val x64 = file("$bergamotJniDir/x86_64/libfeedhub_bergamot.so")
+            arm64.isFile && x64.isFile && arm64.lastModified() >= newestSrc && x64.lastModified() >= newestSrc
+        }
+    }
+
+    val stageBergamotAndroid = tasks.register<Copy>("stageBergamotAndroid") {
+        group = "build"
+        description = "把交叉编译好的 libfeedhub_bergamot.so（arm64-v8a + x86_64）拷进 jniLibs"
+        dependsOn(buildBergamotAndroid)
+        val root = file(bergamotJniDir)
+        inputs.property("dir", root.absolutePath)
+        inputs.files(fileTree(root) { include("*/libfeedhub_bergamot.so") })
+        outputs.dir(bergamotJniLibsStaged)
+        from(root) { include("*/libfeedhub_bergamot.so") }
+        into(bergamotJniLibsStaged)
+        doLast {
+            val out = bergamotJniLibsStaged.get().asFile
+            val found = fileTree(out) { include("*/libfeedhub_bergamot.so") }.files
+            if (found.isEmpty()) {
+                logger.lifecycle(
+                    "翻译：这个包里没有 libfeedhub_bergamot.so（$root 为空），App 里翻译将显示不可用。",
+                )
+            } else {
+                found.sortedBy { it.absolutePath }.forEach {
+                    logger.lifecycle("翻译：已放进 jniLibs ${it.parentFile.name}/${it.name}（${it.length() / 1024} KB）")
+                }
             }
         }
     }
+    tasks.matching { it.name.contains("JniLibFolders") }.configureEach {
+        dependsOn(stageBergamotAndroid)
+    }
+    android.sourceSets["main"].jniLibs.srcDir(bergamotJniLibsStaged.get().asFile)
 }
-tasks.matching { it.name.contains("JniLibFolders") }.configureEach {
-    dependsOn(stageLlamaServerAndroid)
-}
-android.sourceSets["main"].jniLibs.srcDir(llamaServerJniLibs.get().asFile)
 
 
 dependencies {

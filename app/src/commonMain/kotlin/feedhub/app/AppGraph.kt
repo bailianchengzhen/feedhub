@@ -161,9 +161,8 @@ class AppGraph(
     /** 验证码弹框的状态（桌面端 handler 写、[App] 读）；没有 handler 就是 null。 */
     val captchaPrompt: CaptchaPromptState? = null,
     /**
-     * 本地翻译引擎的工厂。桌面传 [feedhub.app.translate.LlamaTranslationEngine]（llama.cpp + HY-MT），
-     * **安卓传 [feedhub.app.translate.AndroidTranslationEngine]**（同一份 Rust，CPU 后端 + assets 里的模型），
-     * 测试 / 截图不传 → [translation] 的 `available` 为 false，界面不翻。
+     * 本地翻译引擎的工厂。桌面与安卓生产组装均传进程内 Bergamot 本地翻译引擎，
+     * 基础版 / 测试 / 截图不传 → [translation] 的 `available` 为 false，界面不翻。
      * 用工厂是因为它要用已经建好的 [settings]（见下面的 [translation]）。
      */
     private val translationEngineFactory: ((SettingsStore) -> TranslationEngine?)? = null,
@@ -174,6 +173,12 @@ class AppGraph(
      * 传了只有一种用途：测试 / 截图注入一个假识别器（会真的过 FFI 回调到 Kotlin）。
      */
     translationIdentifier: LanguageIdentifier? = null,
+    /** 本地翻译支持的源语言白名单（例如内置英译中模型传 `setOf("en")`；为空表示不额外过滤源语言）。 */
+    translationSourceLanguages: Set<String> = emptySet(),
+    /** 本地翻译缓存键的引擎/模型版本标识。 */
+    translationModelId: String? = null,
+    /** 给设置页「翻译（进阶）」展示的翻译运行库与模型来源说明。 */
+    translationRuntimeDescribe: ((SettingsStore) -> String)? = null,
     /** 一行日志写到哪（默认 stderr）。「出口锁关闭，直连」那行走它，见 [proxyProvider]。 */
     private val logLine: (String) -> Unit = { System.err.println(it) },
     /** 首页 / 关注"上一批"存在哪（桌面版是 `~/.cache/feedhub`，冷启动先显示，见 [FeedSnapshot]）；null 就不存。 */
@@ -224,6 +229,12 @@ class AppGraph(
      */
     val coverImages: feedhub.app.embed.CoverImageSource? = null,
 ) {
+    /** 设置页 / 卡片要不要显示本地翻译入口：编译开关开了（`-Pfeedhub.translate=true`），或测试 / 演示显式注入了翻译引擎。 */
+    val showTranslation: Boolean = BuildFeatures.TRANSLATE || translationEngineFactory != null
+
+    /** 设置页要不要显示「本地向量（实验）」卡片：编译开关开了（`-Pfeedhub.embed=true` / `embedNpu=true`），或组装显式传了 embedder。 */
+    val showEmbedding: Boolean = BuildFeatures.EMBED || embedder != null
+
     /**
      * 设置。
      * 不自动翻"）：手机走的是详情里那一行「翻译」，点了才翻；桌面上"点亮平台的自动翻"规则不变。
@@ -318,6 +329,9 @@ class AppGraph(
         settings = settings,
         cacheDir = translationCacheDir,
         identifier = translationIdentifier,
+        sourceLanguages = translationSourceLanguages,
+        modelId = translationModelId,
+        runtimeDescribe = translationRuntimeDescribe?.let { fn -> { fn(settings) } },
     )
 
     /**
@@ -693,14 +707,18 @@ class AppGraph(
             applyHistoryRetention()
             applyBehaviorRetention()
             // 收藏 / 历史补算：清完保留期再排队，免得给马上要被删的行算。
-            // 只在有向量模型、开关开着、在前台时才会真的动（`EmbeddingScheduler` 自己挡）。
-            withContext(Dispatchers.Main) {
-                embedding.requestBackfill()
+            // 基础版（embedder == null）连主线程切换和状态机都不碰。
+            if (embedder != null) {
+                withContext(Dispatchers.Main) {
+                    embedding.requestBackfill()
+                }
             }
         }
-        // 「记录浏览行为」从关变开（或这个开关第一次被读到）时，把收藏 / 历史补算叫醒。
-        scope.launch {
-            snapshotFlow { settings.value.recordBehavior }.collect { on -> if (on) embedding.requestBackfill() }
+        // 「记录浏览行为」从关变开（或这个开关第一次被读到）时，把收藏 / 历史补算叫醒（基础版不挂监听）。
+        if (embedder != null) {
+            scope.launch {
+                snapshotFlow { settings.value.recordBehavior }.collect { on -> if (on) embedding.requestBackfill() }
+            }
         }
     }
 
@@ -730,9 +748,11 @@ class AppGraph(
         // （桌面那条是空实现，行为不变）。引擎还没建出来时这是空操作。
         translation.onForeground(active)
         if (active) {
-            embedding.refreshCountAsync()
-            // 回前台：补算接着排（退后台时队列被取消了，正在算的那批也丢了）
-            embedding.requestBackfill()
+            if (embedder != null) {
+                embedding.refreshCountAsync()
+                // 回前台：补算接着排（退后台时队列被取消了，正在算的那批也丢了）
+                embedding.requestBackfill()
+            }
             home.onForeground()
             following.onForeground()
             keepLoginSessionsFresh()

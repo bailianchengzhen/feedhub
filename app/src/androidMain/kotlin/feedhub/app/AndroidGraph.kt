@@ -16,6 +16,7 @@ import feedhub.app.library.MemoryLibrary
 import feedhub.app.library.RustLibrary
 import feedhub.app.login.AndroidWebLogin
 import feedhub.app.translate.AndroidTranslationEngine
+import feedhub.app.translate.BergamotModelFiles
 import feedhub.app.video.AndroidPlayback
 import feedhub.core.KeyValueStore
 import feedhub.cookies.RustCookieJar
@@ -152,18 +153,13 @@ internal fun androidGraph(
     // 内置代理核心（sing-box 子进程）：只有 nativeLibraryDir 里真有那份二进制时才组装
     // （没有就不显示「内置核心」那一档，免得选了个一定起不来的档位），见 androidProxyCore。
     val core = androidProxyCore(appContext, scope)
-    // 本地向量：CPU / NPU 的后端路由。
-    // 先建出来是因为封面向量那条要拿它当"分时闸门"（算封面前把纯文字会话放掉，见 TextSessionGate）。
-    val npuEngines = androidNpuEngines(appContext, ::androidLogLine)
-    val embedder = androidEmbedder(appContext, scope, ::androidLogLine, npuEngines)
-    // 封面向量：视觉图 + 纯文字那张文本图，
-    // 前台、纯文字闲着就算
-    val coverEmbedder = feedhub.app.embed.NpuOnnxCoverEmbedder(
-        context = appContext,
-        textSessions = embedder as? feedhub.app.embed.TextSessionGate,
-        textRunner = npuEngines?.coverTextRunner(feedhub.app.embed.CoverLayout.TEXT_LEN),
-        log = ::androidLogLine,
-    )
+    // 本地向量 + 封面向量：默认基础版（!BuildFeatures.EMBED）整块不编进 APK，返回空包；
+    // 带了 -Pfeedhub.embed=true 或 -Pfeedhub.embedNpu=true 时由 androidEmbed 源集组装 CPU / NPU 路由与封面图。
+    val embedBundle = if (BuildFeatures.EMBED) {
+        createAndroidEmbedBundle(appContext, scope, ::androidLogLine)
+    } else {
+        AndroidEmbedBundle()
+    }
     // 窗口级组件：进程级组装从 uiBindings 拿（跟着 Activity 挂接 / 解绑），否则按传进来的 context 现建
     val syncFiles = uiBindings?.syncFiles
         ?: (context as? androidx.activity.ComponentActivity)?.let { AndroidSyncFiles(it) }
@@ -203,34 +199,29 @@ internal fun androidGraph(
         // 酷安评论要人机验证时的覆盖层：handler 写 prompt，详情页里的 CaptchaOverlay 读
         captcha = captchaHandler,
         captchaPrompt = captchaHandler.prompt,
-        // 本地向量：ONNX Runtime + 打进安装包的 EmbeddingGemma 2 q4。
-        // 构造时只查 assets 里三个文件在不在（不读内容、不建会话）；没带模型的包这里是 available = false，
-        // 整条通路安静地不可用。
-        embedder = embedder,
-        // 封面向量：两张 HTP 图 + 封面图来源（Coil 磁盘缓存优先，只在 Wi-Fi / 以太网上取）。
-        // 取图每次现读 `AppGraph.imageFetch`。
-        coverEmbedder = coverEmbedder,
-        coverImages = feedhub.app.embed.CoilCoverImages(
-            context = appContext,
-            // `AppGraph.current` 还没设上时（构造期）退回一份"跟随全局 + 按主机名"的独立取图：
-            // 只在第一帧之前被调到才会走到，行为和水那条一样（浏览器 UA 也补）。
-            fetch = { AppGraph.current?.imageFetch ?: androidImageFetch() },
-            log = ::androidLogLine,
-        ),
+        // 本地向量：基础版为 null；开 -Pfeedhub.embed=true / embedNpu=true 时由 androidEmbed 组装。
+        embedder = embedBundle.embedder,
+        // 封面向量：基础版为 null；NPU 包里为两张 HTP 图 + Coil 封面图来源。
+        coverEmbedder = embedBundle.coverEmbedder,
+        coverImages = embedBundle.coverImages,
         // 行为数据导出：写到 getExternalFilesDir(null)/export/，release 包也能用
         behaviorExport = feedhub.app.export.AndroidBehaviorExport(appContext),
-        // 本地翻译：**和桌面同一份 Rust**
-        // （`feedhub-core/src/translate/`），手机上走 `translate::device` 的自动降级
-        // （NPU → GPU → NPU+GPU → CPU，`mobile = true`），时间常量是手机的（并发 1 / 空闲 2 分钟 / 30 次重启），
-        // 降级记忆落在 `ctx.store`（`RustStoreHost(settings.rawStore)`，同一个 `state.json`），
-        // 模型从 APK 的 assets 里拷出来。引擎懒建：没有翻译请求时连 `.so` 都不加载、llama-server 也不起。
-        // 引擎不可用（包里没模型 / 没 llama-server / `.so` 加载不了）时给 null：
-        // `TranslationStore.available` 因此是 false，界面整个不显示翻译入口，而不是装着一个点了一定失败的东西。
-        translationEngineFactory = { settings ->
-            AndroidTranslationEngine(appContext, settings, translateCacheDir(appContext)).takeIf { it.available }
+        // 本地翻译（Project Bergamot 进程内轻量英译中引擎）：默认基础版（!BuildFeatures.TRANSLATE）
+        // 不带翻译模型和运行库，直接给 null；开启 -Pfeedhub.translate=true 且包内资源齐全时懒建引擎。
+        translationEngineFactory = if (BuildFeatures.TRANSLATE && AndroidTranslationEngine.isBundled(appContext)) {
+            { settings -> AndroidTranslationEngine(appContext, settings, translateCacheDir(appContext)) }
+        } else {
+            null
         },
-        // 翻译缓存（`translations.jsonl`）放 App 私有缓存目录（和图片缓存平级，系统可以清）
-        translationCacheDir = translateCacheDir(appContext),
+        // 翻译缓存（`translations.jsonl`）放 App 私有缓存目录（基础版不建）
+        translationCacheDir = if (BuildFeatures.TRANSLATE) translateCacheDir(appContext) else null,
+        translationSourceLanguages = if (BuildFeatures.TRANSLATE) BergamotModelFiles.SUPPORTED_SOURCES else emptySet(),
+        translationModelId = if (BuildFeatures.TRANSLATE) BergamotModelFiles.MODEL_ID else null,
+        translationRuntimeDescribe = if (BuildFeatures.TRANSLATE) {
+            { _ -> AndroidTranslationEngine.describe(appContext) }
+        } else {
+            null
+        },
         // 性能记录器：开关在设置里（默认关）。导出口子把文件复制到系统下载目录，给 adb pull 兜底，
         // 见 AndroidPerfExport 的 KDoc（Android 11+ 非 debuggable 包可能拉不到 Android/data）。
         perf = feedhub.app.perf.PerfRecorder(
@@ -321,61 +312,12 @@ private fun androidLogLine(line: String) {
 }
 
 /**
- * 本地向量的组装：CPU 那份 + NPU 那几张（每张一个固定长度的图）+ 后端路由。
- *
- * **两份模型不再同时进包**：
- * `-Pfeedhub.embedNpu=true` 的构建里 `assets/embed/` 是空的（构建时就不拷那 246 MB），所以这里
- * `OnnxTextEmbedder.bundled == false` → **CPU 会话根本不会建**（`cpu = null`）。NPU 真用不了时本地向量
- * 就是"不可用"——安静地不算、不存，不回退。普通包（不带 NPU）仍然只有 CPU，
- *
- * 带几张图由构建产物决定，
- * 运行时只**发现** assets 里有什么（[feedhub.app.embed.NpuOnnxTextEmbedder.discover]），不猜：长度就是图的名字。
- *
- * [charging] 只用来判断"现在能不能开始编图"。读的是
- * `BatteryManager.isCharging`，**不读电流 / 电量**。
+ * 安卓本地向量的可选组装包：基础版（`!BuildFeatures.EMBED`，源集 `androidNoEmbed`）返回全 null，
+ * 连 `onnxruntime-android` AAR 都不进编译类路径和 APK；开 `-Pfeedhub.embed=true`（或 `-Pfeedhub.embedNpu=true`）
+ * 时由 `androidEmbed` 源集里的 `createAndroidEmbedBundle` 提供真实实现。
  */
-internal fun androidEmbedder(
-    context: android.content.Context,
-    scope: kotlinx.coroutines.CoroutineScope,
-    log: (String) -> Unit,
-    /** 包里的 NPU 图（封面向量要借同一个实例，所以由组装方建好传进来；null = 没带）。 */
-    npu: feedhub.app.embed.NpuOnnxEngines? = androidNpuEngines(context, log),
-): feedhub.app.embed.Embedder {
-    val npuModels = npu?.variants.orEmpty()
-    // 包里有 CPU 模型才建（NPU 包没有；构造本身只查一次 assets.list，不读内容、不建会话）
-    val cpu = feedhub.app.embed.OnnxTextEmbedder(context, log = log).takeIf { it.bundled }
-    log(
-        when {
-            npuModels.isEmpty() && cpu == null ->
-                "[向量] 包里没带任何本地向量模型（CPU / NPU 都没有），本地向量不可用"
-            npuModels.isEmpty() ->
-                "[向量] 包里没带 NPU 图（这个构建没有 -Pfeedhub.embedNpu=true），照样用 CPU"
-            else ->
-                "[向量] 包里带了 " + npuModels.joinToString(" / ") { "每条 ${it.seqLen} token" } +
-                    " 的 NPU 图（共用一份权重；按批挑最短够用的那张，model = " +
-                    feedhub.app.library.npuModelId(feedhub.app.embed.NpuAssets.spaceLen(npuModels.map { it.seqLen })) + "）" +
-                    if (cpu == null) "；这个包不带 CPU 模型，NPU 用不了就是不可用（不回退）" else ""
-        },
-    )
-    return feedhub.app.embed.RoutingEmbedder(
-        cpu = cpu,
-        npu = npu,
-        scope = scope,
-        charging = { chargingNow(context) },
-        log = log,
-    )
-}
-
-/** 包里带的 NPU 图（没带就是 null）。纯文字的路由和封面向量拿的是**同一个**工厂（引擎按长度缓存）。 */
-internal fun androidNpuEngines(
-    context: android.content.Context,
-    log: (String) -> Unit,
-): feedhub.app.embed.NpuOnnxEngines? =
-    feedhub.app.embed.NpuOnnxEngines(context, feedhub.app.embed.NpuOnnxTextEmbedder.discover(context), log = log)
-        .takeIf { it.lengths.isNotEmpty() }
-
-/** 在充电吗（只用于"能不能开始编图"；拿不到就当没充，靠"空闲"那一半放行）。 */
-private fun chargingNow(context: android.content.Context): Boolean = runCatching {
-    val manager = context.getSystemService(android.content.Context.BATTERY_SERVICE) as? android.os.BatteryManager
-    manager?.isCharging == true
-}.getOrDefault(false)
+internal data class AndroidEmbedBundle(
+    val embedder: feedhub.app.embed.Embedder? = null,
+    val coverEmbedder: feedhub.app.embed.CoverEmbedder? = null,
+    val coverImages: feedhub.app.embed.CoverImageSource? = null,
+)

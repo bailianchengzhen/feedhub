@@ -599,7 +599,7 @@ dependencies = [
 
 [[package]]
 name = "feedhub-core"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "aes",
  "aes-gcm",
@@ -627,7 +627,7 @@ dependencies = [
 
 [[package]]
 name = "feedhub-ffi"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "feedhub-core",
  "feedhub-net",
@@ -639,7 +639,7 @@ dependencies = [
 
 [[package]]
 name = "feedhub-gst"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "feedhub-core",
  "flate2",
@@ -654,7 +654,7 @@ dependencies = [
 
 [[package]]
 name = "feedhub-net"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "btls",
  "bytes",
@@ -2385,7 +2385,7 @@ dependencies = [
 
 [[package]]
 name = "uniffi-bindgen"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "uniffi",
 ]

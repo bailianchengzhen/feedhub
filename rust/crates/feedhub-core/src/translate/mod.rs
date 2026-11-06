@@ -93,6 +93,8 @@ pub struct Gate {
     pub enabled: bool,
     pub target: String,
     pub auto_platforms: Vec<String>,
+    /// 当前引擎支持的源语言标签（如 `["en"]`）；**空列表 = 不限制源语言**（凡不是 `target` 的外语都翻）。
+    pub source_languages: Vec<String>,
 }
 
 impl Gate {
@@ -102,5 +104,12 @@ impl Gate {
             None => true,
             Some(p) => self.auto_platforms.iter().any(|it| it == p),
         }
+    }
+
+    /// [`tag`] 是不是这次该翻的源语言：既不能是目标语言，且在限制了 `source_languages` 时必须落在支持列表里。
+    pub fn allows_source(&self, tag: &str) -> bool {
+        !lang::matches_target(tag, &self.target)
+            && (self.source_languages.is_empty()
+                || lang::matches_any_lang(tag, &self.source_languages))
     }
 }

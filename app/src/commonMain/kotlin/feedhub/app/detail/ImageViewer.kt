@@ -1,6 +1,5 @@
 package feedhub.app.detail
 
-import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.animate
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
@@ -16,6 +15,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
@@ -36,14 +36,19 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.Stable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.geometry.Offset
@@ -60,9 +65,12 @@ import androidx.compose.ui.input.pointer.PointerInputChange
 import androidx.compose.ui.input.pointer.PointerType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChange
+import androidx.compose.ui.input.pointer.util.VelocityTracker
+import androidx.compose.ui.input.pointer.util.addPointerInputChange
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntRect
@@ -73,9 +81,15 @@ import androidx.compose.ui.window.Popup
 import androidx.compose.ui.window.PopupPositionProvider
 import androidx.compose.ui.window.PopupProperties
 import coil3.compose.AsyncImage
+import feedhub.app.video.PagerCubicOutEasing
+import feedhub.app.video.isTouchDevice
+import feedhub.app.video.pagerSettleDurationMs
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlin.math.abs
+import kotlin.math.hypot
+import kotlin.math.roundToInt
 
 /** 大图查看层的状态：这一组图和当前是第几张。 */
 @Stable
@@ -107,12 +121,15 @@ private val WholeWindow = object : PopupPositionProvider {
 /**
  * 覆盖整个窗口的大图查看层（用 Popup，双栏时也盖住左边的信息流）。
  *
- * 桌面（保持原样）：滚轮缩放（以鼠标位置为中心）、放大后拖动平移、双击在 1 倍和 2.5 倍之间切换、
- * 左右方向键 / 两侧按钮切换同一篇里的图；Esc、右上角的关闭按钮或在 1 倍时点一下空白处关闭。
+ * 桌面：滚轮缩放（以鼠标位置为中心）、放大后拖动平移、双击在 1 倍和 2.5 倍之间平滑切换、
+ * 左右方向键 / 两侧箭头按钮切换同一篇里的图；Esc、右上角的关闭按钮或在 1 倍时点一下关闭。
  *
- * 触屏：双指缩放；**缩放到 1× 时**左右滑换图（跟手，松手按过没过 1/5 屏决定翻不翻），
- * 往下拖关闭；长按弹出底部菜单「保存到相册 / 分享图片 / 复制图片链接」（保存 / 分享只有安卓有，桌面只有复制链接）。
- * 背景纯黑，左上角「3 / 12」。
+ * 触屏：
+ * - 双指捏合缩放 + 双指中心跟随平移；双击 1× ⇄ 2.5× 平滑缩放；
+ * - **左右 1:1 露出相邻图跟手翻页**（带 16dp 黑色分隔缝，支持 `VelocityTracker` 快速轻拂 Fling 切图与连划不断触）；
+ * - **1× 横竖方向锁**：横滑翻页时纵向锁死不斜飘，竖向仅允许向下拖关闭（禁止向上飘起 `dy < 0`）；
+ * - **放大后滑到边缘可切图**：按图片真实显示比例夹取平移边界，贴到左右边缘继续横拉时无缝带出上 / 下一张；
+ * - **触屏隐藏左右箭头按钮**（仅桌面鼠标保留）；长按弹出底部菜单「保存到相册 / 分享图片 / 复制图片链接」。
  */
 @Composable
 fun ImageViewer(state: ImageViewerState, onClose: () -> Unit) {
@@ -132,19 +149,52 @@ private fun ViewerContent(state: ImageViewerState, onClose: () -> Unit) {
     LaunchedEffect(Unit) { focus.requestFocus() }
     val actions = rememberImageViewerActions()
     val clipboard = LocalClipboardManager.current
+    val density = LocalDensity.current
     val scope = rememberCoroutineScope()
-    var scale by remember(state.index) { mutableFloatStateOf(1f) }
-    var offset by remember(state.index) { mutableStateOf(Offset.Zero) }
-    // 触屏跟手的位移（1× 时左右滑 / 下拉）
-    var drag by remember(state.index) { mutableStateOf(Offset.Zero) }
+
+    var scale by remember { mutableFloatStateOf(1f) }
+    var panOffset by remember { mutableStateOf(Offset.Zero) }
+    // 横向整页跟手位移与 1× 纵向收起位移：仅在布局/绘制阶段读取，拖动与动画期间零重组
+    var pageDragX by remember { mutableFloatStateOf(0f) }
+    var dismissDragY by remember { mutableFloatStateOf(0f) }
+    var pendingPageDelta by remember { mutableIntStateOf(0) }
+    var isTouchGesture by remember { mutableStateOf(false) }
+    var settleJob by remember { mutableStateOf<Job?>(null) }
+    var zoomJob by remember { mutableStateOf<Job?>(null) }
+
     var box by remember { mutableStateOf(IntSize.Zero) }
     var menu by remember { mutableStateOf(false) }
     // 截图工具用：把安卓那一套菜单项都画出来（桌面真机上长按不会弹菜单，保持原样）
     var menuPreview by remember { mutableStateOf(false) }
     var message by remember { mutableStateOf<String?>(null) }
     var busy by remember { mutableStateOf(false) }
-    var lastPressWasTouch by remember { mutableStateOf(false) }
+    var lastPressWasTouch by remember { mutableStateOf(isTouchDevice) }
+
+    // 记录各张图解码后的真实宽高比与加载完成标记（用于真实边界夹取 & 透明 PNG 加载完隐藏底圈）
+    val aspectRatios = remember(state) { mutableStateMapOf<Int, Float>() }
+    val loadedPages = remember(state) { mutableStateMapOf<Int, Boolean>() }
+
+    val pageGapPx = with(density) { ViewerPageGap.toPx() }
+    val minFlingDistPx = with(density) { ViewerFlingMinDistance.toPx() }
+    val flingVelPx = with(density) { ViewerFlingVelocity.toPx() }
+    val dismissFlingVelPx = with(density) { ViewerDismissFlingVelocity.toPx() }
+    val maxSlowDragPx = with(density) { ViewerSlowDragMax.toPx() }
+
     val image = state.images[state.index]
+
+    // 键盘 / 箭头按钮切换图片时重置缩放与位移（触屏翻页在结算落地同一帧已原子归零）
+    LaunchedEffect(state.index) {
+        if (!isTouchGesture && pendingPageDelta == 0) {
+            settleJob?.cancel()
+            settleJob = null
+            zoomJob?.cancel()
+            zoomJob = null
+            scale = 1f
+            panOffset = Offset.Zero
+            pageDragX = 0f
+            dismissDragY = 0f
+        }
+    }
 
     // 截图工具（Screenshot 的 open=image-menu）：直接把底部菜单摆出来
     LaunchedEffect(state) {
@@ -163,44 +213,62 @@ private fun ViewerContent(state: ImageViewerState, onClose: () -> Unit) {
         }
     }
 
-    fun clamp(s: Float, o: Offset): Offset {
-        if (s <= 1.01f) return Offset.Zero
-        val maxX = box.width * (s - 1f) / 2f
-        val maxY = box.height * (s - 1f) / 2f
-        return Offset(o.x.coerceIn(-maxX, maxX), o.y.coerceIn(-maxY, maxY))
+    fun currentAspect(): Float? = aspectRatios[state.index]
+
+    /** 以窗口里 [anchor] 这一点为中心即时缩放：缩放前它下面的图像点，缩放后还在原处。 */
+    fun zoomAt(factor: Float, anchor: Offset) {
+        zoomJob?.cancel()
+        zoomJob = null
+        val (nextScale, nextOffset) = viewerZoomAt(
+            currentScale = scale,
+            currentOffset = panOffset,
+            factor = factor,
+            anchor = anchor,
+            boxW = box.width.toFloat(),
+            boxH = box.height.toFloat(),
+            imageAspect = currentAspect(),
+            maxScale = MaxScale,
+        )
+        scale = nextScale
+        panOffset = nextOffset
     }
 
-    /** 以窗口里 [anchor] 这一点为中心缩放：缩放前它下面的图像点，缩放后还在原处。 */
-    fun zoomAt(factor: Float, anchor: Offset) {
-        val next = (scale * factor).coerceIn(1f, MaxScale)
-        val center = Offset(box.width / 2f, box.height / 2f)
-        val ratio = next / scale
-        offset = clamp(next, (anchor - center) - (anchor - center - offset) * ratio)
-        scale = next
+    fun commitPendingStepIfNeeded() {
+        val pending = pendingPageDelta
+        if (pending != 0) {
+            pendingPageDelta = 0
+            settleJob?.cancel()
+            settleJob = null
+            state.index = (state.index + pending).coerceIn(0, state.images.lastIndex)
+            scale = 1f
+            panOffset = Offset.Zero
+            pageDragX = 0f
+            dismissDragY = 0f
+        }
+    }
+
+    fun stepByButtonOrKey(delta: Int) {
+        commitPendingStepIfNeeded()
+        val target = state.index + delta
+        if (target in state.images.indices) {
+            state.index = target
+        }
     }
 
     fun toast(text: String) {
         message = text
     }
 
-    /**
-     * 触屏手势松手后把跟手位移收回去 / 甩出去，再做 [after]（翻页、关闭）。
-     * 手势本身跑在 `AwaitPointerEventScope`（受限的挂起作用域）里，动画不能在里头跑，所以扔到 [scope] 上。
-     */
-    fun animateDragTo(target: Offset, after: () -> Unit = {}) {
-        scope.launch {
-            val from = drag
-            if (from != target) {
-                animate(0f, 1f, animationSpec = tween(150, easing = LinearEasing)) { t, _ ->
-                    drag = from + (target - from) * t
-                }
-            }
-            after()
-        }
-    }
+    val latestMenu by rememberUpdatedState(menu)
+    val latestPageGapPx by rememberUpdatedState(pageGapPx)
+    val latestMinFlingDistPx by rememberUpdatedState(minFlingDistPx)
+    val latestFlingVelPx by rememberUpdatedState(flingVelPx)
+    val latestDismissFlingVelPx by rememberUpdatedState(dismissFlingVelPx)
+    val latestMaxSlowDragPx by rememberUpdatedState(maxSlowDragPx)
+    val latestOnClose by rememberUpdatedState(onClose)
 
     Box(
-        Modifier.fillMaxSize().background(ViewerBackground).onSizeChanged { box = it }
+        Modifier.fillMaxSize().clipToBounds().background(ViewerBackground).onSizeChanged { box = it }
             .focusRequester(focus).focusable()
             .onKeyEvent { e ->
                 if (e.type != KeyEventType.KeyDown) return@onKeyEvent false
@@ -209,8 +277,8 @@ private fun ViewerContent(state: ImageViewerState, onClose: () -> Unit) {
                     if (e.key == Key.Escape) { menu = false; menuPreview = false; true } else false
                 } else when (e.key) {
                     Key.Escape -> { onClose(); true }
-                    Key.DirectionLeft, Key.PageUp -> { state.prev(); true }
-                    Key.DirectionRight, Key.PageDown -> { state.next(); true }
+                    Key.DirectionLeft, Key.PageUp -> { stepByButtonOrKey(-1); true }
+                    Key.DirectionRight, Key.PageDown -> { stepByButtonOrKey(1); true }
                     Key.Plus, Key.Equals, Key.NumPadAdd -> { zoomAt(1.25f, Offset(box.width / 2f, box.height / 2f)); true }
                     Key.Minus, Key.NumPadSubtract -> { zoomAt(1 / 1.25f, Offset(box.width / 2f, box.height / 2f)); true }
                     else -> false
@@ -220,7 +288,7 @@ private fun ViewerContent(state: ImageViewerState, onClose: () -> Unit) {
                 awaitPointerEventScope {
                     while (true) {
                         val event = awaitPointerEvent()
-                        if (event.type == PointerEventType.Scroll) {
+                        if (event.type == PointerEventType.Scroll && !latestMenu) {
                             val change = event.changes.first()
                             val dy = change.scrollDelta.y
                             if (dy != 0f) {
@@ -231,87 +299,324 @@ private fun ViewerContent(state: ImageViewerState, onClose: () -> Unit) {
                     }
                 }
             }
-            // 缩放 / 平移 / 触屏翻页 / 下拉关闭：一个手势循环里按"几根手指 + 现在几倍"分工
-            .pointerInput(state.index) {
+            // 常驻不随 state.index 重建的手势循环：支持快速连划切图、双指捏合平移、1× 方向锁与放大边缘切图
+            .pointerInput(state) {
                 awaitEachGesture {
                     val down = awaitFirstDown(requireUnconsumed = false)
                     lastPressWasTouch = down.type != PointerType.Mouse
-                    val touch = lastPressWasTouch
-                    var lastPinch = 0f
-                    var pressed: List<PointerInputChange>
-                    do {
-                        val event = awaitPointerEvent()
-                        pressed = event.changes.filter { it.pressed }
-                        when {
-                            pressed.size >= 2 -> {
-                                // 双指缩放（从 1× 也能捏开）
-                                val d = (pressed[1].position - pressed[0].position).getDistance()
-                                if (lastPinch > 0.5f && d > 0.5f) {
-                                    zoomAt(d / lastPinch, (pressed[0].position + pressed[1].position) / 2f)
-                                }
-                                lastPinch = d
-                                pressed.forEach { it.consume() }
-                            }
-                            pressed.size == 1 -> {
-                                val change = pressed.first()
-                                val delta = change.positionChange()
-                                if (scale > 1.01f) {
-                                    // 放大之后：拖动平移
-                                    if (delta != Offset.Zero) {
-                                        offset = clamp(scale, offset + delta)
-                                        change.consume()
-                                    }
-                                } else if (touch && delta != Offset.Zero) {
-                                    // 1× 且在触屏上：左右滑 = 换图，往下拖 = 关闭（跟手）
-                                    drag += delta
-                                    change.consume()
-                                }
-                                // 鼠标在 1× 时拖动：和以前一样什么都不做（桌面行为不变）
-                            }
-                        }
-                    } while (pressed.isNotEmpty())
+                    if (latestMenu) return@awaitEachGesture
 
-                    // 松手：按拖了多远决定翻页 / 关闭 / 弹回去
-                    if (touch && scale <= 1.01f && drag != Offset.Zero) {
-                        val w = box.width.toFloat()
-                        val h = box.height.toFloat()
-                        val dx = drag.x
-                        val dy = drag.y
-                        when {
-                            dy > h * 0.15f && dy > abs(dx) -> animateDragTo(Offset(0f, h)) { onClose() }
-                            dx < -w * 0.2f && state.index < state.images.lastIndex ->
-                                animateDragTo(Offset(-w, 0f)) { state.next(); drag = Offset.Zero }
-                            dx > w * 0.2f && state.index > 0 ->
-                                animateDragTo(Offset(w, 0f)) { state.prev(); drag = Offset.Zero }
-                            else -> animateDragTo(Offset.Zero)
+                    val touch = lastPressWasTouch
+                    isTouchGesture = touch
+                    zoomJob?.cancel()
+                    zoomJob = null
+                    settleJob?.cancel()
+                    settleJob = null
+                    if (pendingPageDelta != 0) {
+                        commitPendingStepIfNeeded()
+                    } else if (abs(pageDragX) > 0.5f || dismissDragY > 0.5f) {
+                        pageDragX = 0f
+                        dismissDragY = 0f
+                    }
+
+                    val slopPx = viewConfiguration.touchSlop
+                    val touchTracker = ImageViewerTouchTracker(slopPx)
+                    val velocityTracker = VelocityTracker()
+                    velocityTracker.addPointerInputChange(down)
+
+                    var lastPinch = 0f
+                    var lastCentroid = Offset.Zero
+                    var hadMultiTouch = false
+                    var mouseDragAccum = 0f
+                    var mouseDragging = false
+                    var settled = false
+
+                    try {
+                        var pressed: List<PointerInputChange>
+                        do {
+                            val event = awaitPointerEvent()
+                            pressed = event.changes.filter { it.pressed }
+                            val boxW = box.width.toFloat().coerceAtLeast(1f)
+                            val boxH = box.height.toFloat().coerceAtLeast(1f)
+                            val stridePx = boxW + latestPageGapPx
+
+                            when {
+                                pressed.size >= 2 -> {
+                                    // 双指捏合缩放 + 双指质心同步平移
+                                    hadMultiTouch = true
+                                    if (abs(pageDragX) > 0.5f || dismissDragY > 0.5f) {
+                                        pageDragX = 0f
+                                        dismissDragY = 0f
+                                    }
+                                    val p0 = pressed[0].position
+                                    val p1 = pressed[1].position
+                                    val d = (p1 - p0).getDistance()
+                                    val centroid = (p0 + p1) / 2f
+                                    if (lastPinch > 0.5f && d > 0.5f) {
+                                        val movedPan = panOffset + (centroid - lastCentroid)
+                                        val (nextScale, nextOffset) = viewerZoomAt(
+                                            currentScale = scale,
+                                            currentOffset = movedPan,
+                                            factor = d / lastPinch,
+                                            anchor = centroid,
+                                            boxW = boxW,
+                                            boxH = boxH,
+                                            imageAspect = currentAspect(),
+                                            maxScale = MaxScale,
+                                        )
+                                        scale = nextScale
+                                        panOffset = nextOffset
+                                    }
+                                    lastPinch = d
+                                    lastCentroid = centroid
+                                    pressed.forEach { it.consume() }
+                                }
+                                pressed.size == 1 -> {
+                                    lastPinch = 0f
+                                    val change = pressed.first()
+                                    velocityTracker.addPointerInputChange(change)
+                                    val delta = change.positionChange()
+                                    if (delta != Offset.Zero) {
+                                        if (hadMultiTouch) {
+                                            // 双指松开一根后剩单指：继续平滑平移，不误判为 1× 翻页或点击关闭
+                                            if (scale > 1.01f) {
+                                                panOffset = viewerClampPan(scale, panOffset + delta, boxW, boxH, currentAspect())
+                                            }
+                                            change.consume()
+                                        } else if (touch) {
+                                            val update = touchTracker.onMove(
+                                                delta = delta,
+                                                scale = scale,
+                                                currentPan = panOffset,
+                                                boxW = boxW,
+                                                boxH = boxH,
+                                                stridePx = stridePx,
+                                                imageAspect = currentAspect(),
+                                                hasPrev = state.index > 0,
+                                                hasNext = state.index < state.images.lastIndex,
+                                            )
+                                            panOffset = update.panOffset
+                                            pageDragX = update.pageDragX
+                                            dismissDragY = update.dismissDragY
+                                            if (update.consumed) change.consume()
+                                        } else if (scale > 1.01f) {
+                                            // 桌面鼠标在放大后拖动平移（过微距阈值再消费，保证双击缩回不被鼠标微抖吃掉）
+                                            mouseDragAccum += hypot(delta.x, delta.y)
+                                            if (!mouseDragging && mouseDragAccum > slopPx * 0.5f) {
+                                                mouseDragging = true
+                                            }
+                                            if (mouseDragging) {
+                                                panOffset = viewerClampPan(scale, panOffset + delta, boxW, boxH, currentAspect())
+                                                change.consume()
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        } while (pressed.isNotEmpty())
+
+                        isTouchGesture = false
+                        settled = true
+
+                        if (touch && !hadMultiTouch) {
+                            val boxW = box.width.toFloat().coerceAtLeast(1f)
+                            val boxH = box.height.toFloat().coerceAtLeast(1f)
+                            val stridePx = boxW + latestPageGapPx
+                            val velocity = velocityTracker.calculateVelocity()
+
+                            when {
+                                touchTracker.mode == ViewerTouchMode.VerticalDismiss && dismissDragY > 0.5f -> {
+                                    val shouldClose = viewerShouldDismiss(
+                                        dyPx = dismissDragY,
+                                        velocityYPxPerSec = velocity.y,
+                                        boxHeightPx = boxH,
+                                        minFlingDistancePx = latestMinFlingDistPx,
+                                        dismissFlingVelocityPxPerSec = latestDismissFlingVelPx,
+                                    )
+                                    val startY = dismissDragY
+                                    val targetY = if (shouldClose) boxH else 0f
+                                    val durationMs = pagerSettleDurationMs(targetY - startY, velocity.y, boxH)
+                                    settleJob = scope.launch {
+                                        if (durationMs > 0) {
+                                            animate(
+                                                initialValue = startY,
+                                                targetValue = targetY,
+                                                animationSpec = tween(durationMillis = durationMs, easing = PagerCubicOutEasing),
+                                            ) { v, _ -> dismissDragY = v }
+                                        } else {
+                                            dismissDragY = targetY
+                                        }
+                                        if (shouldClose) latestOnClose()
+                                    }
+                                }
+                                abs(pageDragX) > 0.5f -> {
+                                    val step = viewerHorizontalSettleStep(
+                                        dxPx = touchTracker.rawPageDx,
+                                        velocityXPxPerSec = velocity.x,
+                                        boxWidthPx = boxW,
+                                        minFlingDistancePx = latestMinFlingDistPx,
+                                        flingVelocityPxPerSec = latestFlingVelPx,
+                                        maxSlowDragPx = latestMaxSlowDragPx,
+                                    )
+                                    val canStep = (step > 0 && state.index < state.images.lastIndex) ||
+                                        (step < 0 && state.index > 0)
+                                    if (step != 0 && canStep) {
+                                        pendingPageDelta = step
+                                        val startX = pageDragX
+                                        val targetX = if (step > 0) -stridePx else stridePx
+                                        val durationMs = pagerSettleDurationMs(targetX - startX, velocity.x, stridePx)
+                                        settleJob = scope.launch {
+                                            if (durationMs > 0) {
+                                                animate(
+                                                    initialValue = startX,
+                                                    targetValue = targetX,
+                                                    animationSpec = tween(durationMillis = durationMs, easing = PagerCubicOutEasing),
+                                                ) { v, _ -> pageDragX = v }
+                                            } else {
+                                                pageDragX = targetX
+                                            }
+                                            if (pendingPageDelta == step) {
+                                                pendingPageDelta = 0
+                                                state.index = (state.index + step).coerceIn(0, state.images.lastIndex)
+                                                scale = 1f
+                                                panOffset = Offset.Zero
+                                                pageDragX = 0f
+                                                dismissDragY = 0f
+                                            }
+                                        }
+                                    } else {
+                                        val startX = pageDragX
+                                        val durationMs = pagerSettleDurationMs(startX, velocity.x, stridePx)
+                                        settleJob = scope.launch {
+                                            if (durationMs > 0) {
+                                                animate(
+                                                    initialValue = startX,
+                                                    targetValue = 0f,
+                                                    animationSpec = tween(durationMillis = durationMs, easing = PagerCubicOutEasing),
+                                                ) { v, _ -> pageDragX = v }
+                                            } else {
+                                                pageDragX = 0f
+                                            }
+                                        }
+                                    }
+                                }
+                            }
                         }
+                    } finally {
+                        if (!settled) isTouchGesture = false
                     }
                 }
             }
-            .pointerInput(Unit) {
+            .pointerInput(state) {
                 detectTapGestures(
-                    onDoubleTap = { p -> if (scale > 1.01f) { scale = 1f; offset = Offset.Zero } else zoomAt(2.5f, p) },
-                    onTap = { if (scale <= 1.01f && !menu) onClose() },
+                    onDoubleTap = { p ->
+                        if (latestMenu) return@detectTapGestures
+                        zoomJob?.cancel()
+                        val fromScale = scale
+                        val fromOffset = panOffset
+                        val (toScale, toOffset) = if (fromScale > 1.01f) {
+                            1f to Offset.Zero
+                        } else {
+                            viewerZoomAt(
+                                currentScale = 1f,
+                                currentOffset = Offset.Zero,
+                                factor = 2.5f,
+                                anchor = p,
+                                boxW = box.width.toFloat(),
+                                boxH = box.height.toFloat(),
+                                imageAspect = currentAspect(),
+                                maxScale = MaxScale,
+                            )
+                        }
+                        zoomJob = scope.launch {
+                            animate(
+                                initialValue = 0f,
+                                targetValue = 1f,
+                                animationSpec = tween(durationMillis = 160, easing = PagerCubicOutEasing),
+                            ) { t, _ ->
+                                scale = fromScale + (toScale - fromScale) * t
+                                panOffset = fromOffset + (toOffset - fromOffset) * t
+                            }
+                        }
+                    },
+                    onTap = { if (scale <= 1.01f && !latestMenu) latestOnClose() },
                     onLongPress = {
                         // 长按 = 底部菜单。只在手指上（鼠标长按不改桌面行为）。
-                        if (lastPressWasTouch) menu = true
+                        if (lastPressWasTouch && !latestMenu) menu = true
                     },
                 )
             },
     ) {
-        CircularProgressIndicator(Modifier.align(Alignment.Center).size(28.dp), color = Color.White.copy(alpha = 0.7f), strokeWidth = 2.dp)
-        val layer = Modifier.fillMaxSize().graphicsLayer(
-            scaleX = scale,
-            scaleY = scale,
-            translationX = offset.x + drag.x,
-            translationY = offset.y + drag.y,
-        )
-        // 原图出来之前先垫着正文里已经加载好的那张
-        if (image.thumb != null && image.thumb != image.url) {
-            AsyncImage(model = image.thumb, contentDescription = null, contentScale = ContentScale.Fit, modifier = layer)
-        }
-        AsyncImage(model = image.url, contentDescription = image.caption, contentScale = ContentScale.Fit, modifier = layer)
+        val currentIdx = state.index
+        val firstPage = (currentIdx - 1).coerceAtLeast(0)
+        val lastPage = (currentIdx + 1).coerceAtMost(state.images.lastIndex)
+        val stridePx = box.width.toFloat().coerceAtLeast(1f) + pageGapPx
 
+        // 当前页与前 / 后相邻页按 pageIndex 固定组合身份：
+        // 左右跟手滑入时 1:1 露出相邻图（中间留 16dp 黑缝），翻页落定那帧相邻页原地晋升为当前页，零闪烁、零重绑。
+        for (pageIndex in firstPage..lastPage) {
+            key(pageIndex) {
+                val pageImage = state.images[pageIndex]
+                val rel = pageIndex - currentIdx
+                val isCurrent = rel == 0
+                val pageModifier = if (isCurrent) {
+                    Modifier
+                        .fillMaxSize()
+                        .offset { IntOffset(pageDragX.roundToInt(), dismissDragY.roundToInt()) }
+                        .graphicsLayer {
+                            scaleX = scale
+                            scaleY = scale
+                            translationX = panOffset.x
+                            translationY = panOffset.y
+                        }
+                } else {
+                    Modifier
+                        .fillMaxSize()
+                        .offset { IntOffset((rel * stridePx + pageDragX).roundToInt(), 0) }
+                        .drawWithContent { if (abs(pageDragX) > 0.5f) drawContent() }
+                }
+
+                Box(pageModifier) {
+                    if (loadedPages[pageIndex] != true) {
+                        CircularProgressIndicator(
+                            Modifier.align(Alignment.Center).size(28.dp),
+                            color = Color.White.copy(alpha = 0.7f),
+                            strokeWidth = 2.dp,
+                        )
+                    }
+                    // 原图出来之前先垫着正文里已经加载好的那张
+                    if (pageImage.thumb != null && pageImage.thumb != pageImage.url) {
+                        AsyncImage(
+                            model = pageImage.thumb,
+                            contentDescription = null,
+                            contentScale = ContentScale.Fit,
+                            onSuccess = { s ->
+                                val sz = s.painter.intrinsicSize
+                                if (sz.width > 0f && sz.height > 0f && sz.width.isFinite() && sz.height.isFinite() && pageIndex !in aspectRatios) {
+                                    aspectRatios[pageIndex] = sz.width / sz.height
+                                }
+                            },
+                            modifier = Modifier.fillMaxSize(),
+                        )
+                    }
+                    AsyncImage(
+                        model = pageImage.url,
+                        contentDescription = pageImage.caption,
+                        contentScale = ContentScale.Fit,
+                        onSuccess = { s ->
+                            loadedPages[pageIndex] = true
+                            val sz = s.painter.intrinsicSize
+                            if (sz.width > 0f && sz.height > 0f && sz.width.isFinite() && sz.height.isFinite()) {
+                                aspectRatios[pageIndex] = sz.width / sz.height
+                            }
+                        },
+                        modifier = Modifier.fillMaxSize(),
+                    )
+                }
+            }
+        }
+
+        val showDesktopArrows = !isTouchDevice && !lastPressWasTouch
         if (state.images.size > 1) {
             Text(
                 "${state.index + 1} / ${state.images.size}",
@@ -319,8 +624,12 @@ private fun ViewerContent(state: ImageViewerState, onClose: () -> Unit) {
                 modifier = Modifier.align(Alignment.TopStart).padding(16.dp)
                     .background(Color.Black.copy(alpha = 0.45f), CircleShape).padding(horizontal = 12.dp, vertical = 4.dp),
             )
-            if (state.index > 0) ViewerArrow(Modifier.align(Alignment.CenterStart).padding(8.dp), left = true, onClick = state::prev)
-            if (state.index < state.images.lastIndex) ViewerArrow(Modifier.align(Alignment.CenterEnd).padding(8.dp), left = false, onClick = state::next)
+            if (showDesktopArrows && state.index > 0) {
+                ViewerArrow(Modifier.align(Alignment.CenterStart).padding(8.dp), left = true) { stepByButtonOrKey(-1) }
+            }
+            if (showDesktopArrows && state.index < state.images.lastIndex) {
+                ViewerArrow(Modifier.align(Alignment.CenterEnd).padding(8.dp), left = false) { stepByButtonOrKey(1) }
+            }
         }
         IconButton(
             onClick = onClose,

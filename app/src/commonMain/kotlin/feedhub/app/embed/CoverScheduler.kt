@@ -100,17 +100,23 @@ class CoverVectorScheduler(
     /** 一轮最多盯多久（纯文字一直忙时）：到点就歇着，等下一次叫醒（默认半小时）。 */
     private val maxWaitMs: Long = 30 * 60_000L,
 ) {
-    /** 队列 / 窗口 / 状态机（Rust）。 */
-    private val state = RustEmbed.CoverSchedulerState(
-        RustEmbed.coverConfig(
-            windowSize = windowSize,
-            maxQueued = maxQueued,
-            dim = dim,
-            maxWaitMs = maxWaitMs,
-        ),
-    )
+    @Volatile
+    private var stateCreated = false
 
-    private val store = LibraryEmbedStore(library)
+    /** 队列 / 窗口 / 状态机（Rust，懒建：基础版 embedder == null 时不触发 FFI 分配）。 */
+    private val state by lazy {
+        stateCreated = true
+        RustEmbed.CoverSchedulerState(
+            RustEmbed.coverConfig(
+                windowSize = windowSize,
+                maxQueued = maxQueued,
+                dim = dim,
+                maxWaitMs = maxWaitMs,
+            ),
+        )
+    }
+
+    private val store by lazy { LibraryEmbedStore(library) }
 
     /** 写进 `item_embedding.model` 的标识（`…-htp-l128-img8x8`）。 */
     val modelId: String get() = embedder?.modelId ?: ""
@@ -159,10 +165,10 @@ class CoverVectorScheduler(
     private var vectorsOut: List<FloatArray?>? = null
 
     /** 这个进程里的失败原因（null = 还好；**由 Rust 记**，这里只给 `ensureWorker` 挡一下）。 */
-    private val broken: String? get() = if (state.isBroken()) "本次进程不可用" else null
+    private val broken: String? get() = if (stateCreated && state.isBroken()) "本次进程不可用" else null
 
     init {
-        refreshAsync()
+        if (embedder != null) refreshAsync()
     }
 
     private fun initialStatus(): CoverStatus = when {
@@ -205,34 +211,43 @@ class CoverVectorScheduler(
         if (!active) {
             job?.cancel()
             job = null
+            if (!stateCreated) {
+                status = initialStatus()
+                pending = 0
+                return
+            }
             state.resetStatus(embedder?.bundled == true, enabled())
             status = state.status().toCoverStatus()
             pending = state.pending()
             return
         }
-        if (state.pending() > 0) ensureWorker()
+        if (stateCreated && state.pending() > 0) ensureWorker()
     }
 
     /** 开关打开 / 回前台：叫醒一次。 */
     fun poke() {
         if (!enabled() || !foreground()) return
-        if (state.pending() == 0) return
+        if (!stateCreated || state.pending() == 0) return
         ensureWorker()
     }
 
     /** 取消当前、清空队列（回前台后由 [offer] 重新开始）。 */
     fun cancel() {
-        state.cancel()
+        if (stateCreated) state.cancel()
         pending = 0
         job?.cancel()
         job = null
+        if (!stateCreated) {
+            status = initialStatus()
+            return
+        }
         state.resetStatus(embedder?.bundled == true, enabled())
         status = state.status().toCoverStatus()
     }
 
     /** 清空统计（设置里"清除行为数据"之后调；库里的行由 `Library.clearExposure` 一起清）。 */
     fun resetStats() {
-        state.resetStats()
+        if (stateCreated) state.resetStats()
         stored = 0
         computed = 0
         skipped = 0

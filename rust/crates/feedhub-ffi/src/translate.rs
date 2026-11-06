@@ -79,6 +79,8 @@ pub struct FfiTrGate {
     pub target: String,
     /// 「自动翻译点亮的平台」的平台 id（`X` / `YOUTUBE` …，只做"在不在里面"）。
     pub auto_platforms: Vec<String>,
+    /// 允许翻的源语言（如 `["en"]`）；空列表表示不限源语言。
+    pub source_languages: Vec<String>,
 }
 
 /// 一次翻译的本机设置。
@@ -380,6 +382,7 @@ impl FfiTrStore {
             enabled: gate.enabled,
             target: gate.target,
             auto_platforms: gate.auto_platforms,
+            source_languages: gate.source_languages,
         };
         core_tr::lang::should_auto_translate(
             &text,
@@ -397,6 +400,23 @@ impl FfiTrStore {
     /// 所以"两个判断对同一段文字的结论"在同一份模型上是稳定的。
     pub fn entry_visible(&self, text: String, language: Option<String>, target: String) -> bool {
         core_tr::entry::entry_visible(&text, language.as_deref(), &target, self.detector.as_dyn())
+    }
+
+    /// 带源语言白名单的手动入口判定（单向英译中传 `["en"]`；空列表等同 [`Self::entry_visible`]）。
+    pub fn entry_visible_for_sources(
+        &self,
+        text: String,
+        language: Option<String>,
+        target: String,
+        source_languages: Vec<String>,
+    ) -> bool {
+        core_tr::entry::entry_visible_for_sources(
+            &text,
+            language.as_deref(),
+            &target,
+            &source_languages,
+            self.detector.as_dyn(),
+        )
     }
 }
 

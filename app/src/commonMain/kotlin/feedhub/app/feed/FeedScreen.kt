@@ -1,7 +1,5 @@
 package feedhub.app.feed
 
-import androidx.compose.animation.core.FastOutSlowInEasing
-import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.scrollBy
@@ -499,11 +497,9 @@ private fun FeedGrid(
             modifier = modifier.onSizeChanged { gridWidthPx = it.width },
         ) {
             items(shown, key = { it.key }) { item ->
-                // 换列数 / 刷新插入时卡片滑到新位置：时长和曲线跟双栏的过渡一致（默认的弹簧要晃半秒多，比详情滑入慢一截）
                 FeedCard(
                     item,
                     onClick = { onOpen(item) },
-                    modifier = Modifier.animateItem(placementSpec = tween(PaneAnimMillis, easing = FastOutSlowInEasing)),
                 )
             }
             item(span = StaggeredGridItemSpan.FullLine, key = FEED_FOOTER_KEY) {

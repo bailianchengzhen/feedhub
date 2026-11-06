@@ -131,6 +131,13 @@ fun PlayerView(
      * 那块空白里。取弹幕照旧由这里跑。
      */
     drawDanmaku: Boolean = true,
+    /**
+     * 播放器内部要不要自己挂点击 / 触屏手势。沉浸界面（[ImmersionScreen]）手势覆盖整个舞台（含上下模糊留白区）
+     * 并改成零延迟单击暂停 + 底部进度条调进度，这里传 false。
+     */
+    interactive: Boolean = true,
+    /** 画面正中的状态层（缓冲圈 / 错误说明 / 登录按钮）画不画在这里；沉浸界面挪到舞台手势层之上画，传 false。 */
+    showCenterStatus: Boolean = true,
 ) {
     val engine = session.engine
     val state = session.state
@@ -167,8 +174,8 @@ fun PlayerView(
     val density = LocalDensity.current.density
     val brightness = rememberWindowBrightness()
     val haptic = LocalHapticFeedback.current
-    // 桌面：鼠标一动就把控件条叫回来（原来就是这样，手势只加在触屏上）；触屏不这么做，不然"点一下隐藏"会被自己再打开
-    val pointerModifier = if (isTouchDevice) {
+    // 桌面：鼠标一动就把控件条叫回来（原来就是这样，手势只加在触屏上）；触屏 / 无控件条不这么做
+    val pointerModifier = if (isTouchDevice || !controls) {
         Modifier
     } else {
         Modifier.pointerInput(Unit) {
@@ -184,10 +191,7 @@ fun PlayerView(
             }
         }
     }
-    // 触屏上的手势：**常规详情页和沉浸界面共用同一份**（长按 3 倍速 / 上滑锁定 / 拖进度 / 亮度 / 音量）。
-    // controls=true（常规详情页）：单击显隐控件、双击暂停；controls=false（沉浸界面）：单击暂停、双击放大，
-    // 竖向拖动不认领（那边上下滑是"上一条 / 下一条"，见 PlayerGestures.kind 的 verticalLevels）。
-    val gestureModifier: Modifier? = if (isTouchDevice) {
+    val gestureModifier: Modifier? = if (interactive && isTouchDevice) {
         Modifier.playerTouchGestures(
             durationMs = { state.durationMs },
             positionMs = { state.nowMs() },
@@ -279,13 +283,15 @@ fun PlayerView(
             }
             LaunchedEffect(timeline) { session.runDanmakuLoader() }
         }
-        // 点击 / 双击：触屏走手势那一套（见 PlayerGestures.kt），桌面 / 沉浸界面还是"单击暂停、双击放大"
-        Box(
-            (gestureModifier ?: Modifier.pointerInput(zoomed) {
-                detectTapGestures(onTap = { session.togglePlay() }, onDoubleTap = { onToggleZoom() })
-            }).fillMaxSize(),
-        )
-        CenterStatus(session, onLogin)
+        // 点击 / 双击：常规详情页走手势 / 双击放大；沉浸界面（interactive = false）在外面铺满整舞台接管
+        if (interactive) {
+            Box(
+                (gestureModifier ?: Modifier.pointerInput(zoomed) {
+                    detectTapGestures(onTap = { session.togglePlay() }, onDoubleTap = { onToggleZoom() })
+                }).fillMaxSize(),
+            )
+        }
+        if (showCenterStatus) CenterStatus(session, onLogin)
         PlayerHintOverlay(hint)
         // 底部控件（沉浸界面用自己的一条细进度条 + 右侧按钮列，不画这一条）
         if (controls) {
@@ -380,7 +386,7 @@ private class PanelPosition(private val margin: Int) : PopupPositionProvider {
  * 播放 / 暂停走点画面和控制条上的按钮。
  */
 @Composable
-private fun BoxScope.CenterStatus(session: PlaybackSession, onLogin: (() -> Unit)?) {
+internal fun BoxScope.CenterStatus(session: PlaybackSession, onLogin: (() -> Unit)?) {
     val state = session.state
     val unavailable = session.engine.unavailable
     val error = unavailable ?: session.error ?: state.error

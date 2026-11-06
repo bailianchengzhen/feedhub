@@ -235,8 +235,17 @@ fun androidDemoGraph(
             ?: feedhub.app.display.NoFrameRateSink,
         captcha = captcha,
         captchaPrompt = captcha.prompt,
-        // 演示环境也接上本地向量和导出：模拟器上整条通路（算 → 存 → 导出）要能跑，且一个平台请求都不发
-        embedder = feedhub.app.androidEmbedder(context, scope, { line -> android.util.Log.i("feedhub-embed", line) }),
+        // 演示环境：开 -Pfeedhub.embed=true / embedNpu=true 时接上本地向量；基础版为 null
+        embedder = if (feedhub.app.BuildFeatures.EMBED) {
+            feedhub.app.createAndroidEmbedBundle(
+                context,
+                scope,
+                { line -> android.util.Log.i("feedhub-embed", line) },
+                includeCover = false,
+            ).embedder
+        } else {
+            null
+        },
         behaviorExport = feedhub.app.export.AndroidBehaviorExport(context),
         // 「X 式」翻译界面：只有 `--ez translate true` 时接假引擎（不启 llama-server）
         translationEngineFactory = if (translateDemo) {

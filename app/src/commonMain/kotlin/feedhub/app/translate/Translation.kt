@@ -146,9 +146,8 @@ internal fun languageMatchesTarget(tag: String, target: String): Boolean =
 class TranslationStore(
     private val scope: CoroutineScope,
     /**
-     * 引擎工厂（桌面版是 [LlamaTranslationEngine]，安卓是
-     * [feedhub.app.translate.AndroidTranslationEngine]）。**懒调用**：第一次真的要翻时才建。
-     * null = 这个组装没有本地翻译（测试 / 截图 / 包里缺模型或 llama-server），[available] 为 false。
+     * 引擎工厂（桌面与安卓均接进程内 Bergamot 本地轻量翻译引擎）。**懒调用**：第一次真的要翻时才建。
+     * null = 这个组装没有本地翻译（基础版构建 / 测试 / 截图），[available] 为 false。
      */
     private val engineFactory: (() -> TranslationEngine?)?,
     private val settings: SettingsStore,
@@ -158,6 +157,18 @@ class TranslationStore(
      * 传了就用它。
      */
     private val identifier: LanguageIdentifier? = null,
+    /**
+     * 当前引擎支持的源语言白名单（BCP 47 短码，如 `setOf("en")`）。
+     * 为空表示不额外限制源语言（兼容旧测试与多语种模型）；非空时仅白名单内的外语触发自动翻译或显示手动「翻译」入口。
+     */
+    val sourceLanguages: Set<String> = emptySet(),
+    /**
+     * 翻译缓存键里的引擎标识前缀（如 `"bergamot-enzh-v060"`）。
+     * 生产环境传入以与旧版 GGUF 缓存自动隔离；默认 `null` 保持与对拍 `legacyKeyFor` 完全一致。
+     */
+    private val modelId: String? = null,
+    /** 给「翻译（进阶）」展示的运行库与模型来源说明（不含用户隐私内容）。 */
+    private val runtimeDescribe: (() -> String)? = null,
 ) {
     /**
      * Rust 那边的缓存 + 语言识别 + 门控。
@@ -173,9 +184,15 @@ class TranslationStore(
         )
     }
 
-    /** 写缓存的单线程（Rust 的 `cache_put` 是同步写文件，不能在 Main 上做）。 */
-    private val cacheWriter = Executors.newSingleThreadExecutor { r ->
-        Thread(r, "feedhub-translation-cache").apply { isDaemon = true }
+    @Volatile
+    private var cacheWriterCreated = false
+
+    /** 写缓存的单线程（懒建：基础版不用翻译时一条额外线程都不起；Rust 的 `cache_put` 是同步写文件，不能在 Main 上做）。 */
+    private val cacheWriter by lazy {
+        cacheWriterCreated = true
+        Executors.newSingleThreadExecutor { r ->
+            Thread(r, "feedhub-translation-cache").apply { isDaemon = true }
+        }
     }
 
     private val states = mutableStateMapOf<String, TranslationState>()
@@ -222,9 +239,9 @@ class TranslationStore(
     @Volatile
     private var entryMemoKey: String = ""
 
-    /** 设置变了（目标语言 / 开关 / 可用性）：入口判定的备忘录整份作废。 */
+    /** 设置变了（目标语言 / 开关 / 可用性 / 源语言范围）：入口判定的备忘录整份作废。 */
     private fun invalidateEntryMemo() {
-        val key = "$enabled|$target|$available"
+        val key = "$enabled|$target|$available|${sourceLanguages.joinToString(",")}"
         if (key != entryMemoKey) {
             entryMemoKey = key
             entryMemo.clear()
@@ -235,6 +252,9 @@ class TranslationStore(
     val available: Boolean get() = engineFactory != null
     val enabled: Boolean get() = settings.value.translationOn
     val target: String get() = settings.value.translationTarget
+
+    /** 当前组装的模型与运行库状态说明（给设置页「翻译（进阶）」显示）。 */
+    fun describeRuntime(): String? = runtimeDescribe?.invoke()
 
     /** 自动翻译点亮的平台。手动那一行「翻译」（[entryVisible]）不看它。 */
     val autoPlatforms: Set<Platform> get() = settings.value.translationPlatforms
@@ -252,12 +272,12 @@ class TranslationStore(
         }
     }
 
-    /** 排队器（只建一次）；并发上限 = 引擎的 `-np`。 */
+    /** 排队器（只建一次）；并发上限 = 引擎的 `parallelism`。 */
     private fun scheduler(): TranslationScheduler {
         schedulerRef?.let { return it }
         return synchronized(lock) {
             schedulerRef ?: TranslationScheduler(engineOrNull()?.parallelism ?: 1, scope) { text, target ->
-                val engine = engineOrNull() ?: error("本地翻译只在桌面版可用")
+                val engine = engineOrNull() ?: error("本地翻译不可用")
                 engine.translate(text, target)
             }.also { schedulerRef = it }
         }
@@ -292,6 +312,7 @@ class TranslationStore(
             enabled = enabled,
             target = target,
             autoPlatforms = autoPlatforms,
+            sourceLanguages = sourceLanguages,
         )
 
     /**
@@ -309,7 +330,12 @@ class TranslationStore(
         invalidateEntryMemo()
         val memoKey = "${language.orEmpty()}\u0000$text"
         entryMemo[memoKey]?.let { return it }
-        val visible = core.entryVisible(text = text, language = language, target = target)
+        val visible = core.entryVisible(
+            text = text,
+            language = language,
+            target = target,
+            sourceLanguages = sourceLanguages,
+        )
         if (entryMemo.size > 4096) entryMemo.clear()
         entryMemo[memoKey] = visible
         return visible
@@ -465,8 +491,10 @@ class TranslationStore(
     /** 退出前收尾：排队中的请求取消掉、缓存写线程等一会儿、引擎（llama-server）停掉。 */
     fun close() {
         schedulerRef?.cancelPending()
-        cacheWriter.shutdown()
-        runCatching { cacheWriter.awaitTermination(CACHE_FLUSH_TIMEOUT_MS, TimeUnit.MILLISECONDS) }
+        if (cacheWriterCreated) {
+            cacheWriter.shutdown()
+            runCatching { cacheWriter.awaitTermination(CACHE_FLUSH_TIMEOUT_MS, TimeUnit.MILLISECONDS) }
+        }
         engineRef?.close()
         engineRef = null
     }
@@ -486,7 +514,8 @@ class TranslationStore(
         // 模型路径也进键（`lid2` 起取代原来的引擎 id）：引擎是懒建的，键不能等它建出来才稳定，
         // 换个 GGUF 就换一批键，旧译文不会串（第一次会把旧缓存当作未命中，重新翻一遍，纯性能代价）。
         // 这里只是备忘录。
-        val model = settings.value.translationModelPath
+        val customPath = settings.value.translationModelPath
+        val model = if (modelId != null) "$modelId:$customPath" else customPath
         val target = target
         val raw = "$model\u0000$target\u0000$text"
         keyCache[raw]?.let { return it }

@@ -110,10 +110,15 @@ pub fn matches_target(tag: &str, target: &str) -> bool {
     }
 }
 
+/// [`tag`] 是否匹配 [`allowed`] 中的任一语言（复用 [`matches_target`] 的标签归一化规则）。
+pub fn matches_any_lang(tag: &str, allowed: &[String]) -> bool {
+    allowed.iter().any(|want| matches_target(tag, want))
+}
+
 /// 这条内容要不要**自动**翻译（手动「翻译这条」不走这里）。
 ///
 /// [`detector`] 为 `None` = 这个组装没有本地语言识别（安卓 / 测试 / 截图）：
-/// 有平台语言就信平台，没有就**直接翻**（和 Kotlin 的 `identifier?.detect(t) ?: return true` 一致）。
+/// 有平台语言就信平台，没有则在未限制 `source_languages` 时直接翻（和 Kotlin 的 `identifier?.detect(t) ?: return true` 一致）。
 pub fn should_auto_translate(
     text: &str,
     language: Option<&str>,
@@ -141,15 +146,18 @@ pub fn should_auto_translate(
             !matches!(lower.as_str(), "und" | "zxx" | "qme" | "qht")
         });
     if let Some(lang) = platform_language {
-        return !matches_target(lang, &gate.target);
+        return gate.allows_source(lang);
     }
     if t.as_bytes().len() < MIN_AUTO_BYTES {
         return false;
     }
-    match detector.and_then(|d| d.detect(t)) {
-        Some(detected) => !matches_target(&detected, &gate.target),
-        // 识别不出来（日语 / 韩语 / 其他）：按外语处理；没有识别器时也是这个分支。
-        None => true,
+    match detector {
+        Some(d) => match d.detect(t) {
+            Some(detected) => gate.allows_source(&detected),
+            // 识别不出来（日语 / 韩语 / 其他）：多语种引擎按外语处理；单语对（如仅 en→zh）时不翻，避免词表不匹配出乱码。
+            None => gate.source_languages.is_empty(),
+        },
+        None => gate.source_languages.is_empty(),
     }
 }
 

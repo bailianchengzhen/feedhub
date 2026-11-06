@@ -66,20 +66,26 @@ class EmbeddingScheduler(
     private val backfillWindowMs: Long = SEEN_ITEM_RETENTION_DAYS * 86_400_000L,
     private val graphLengths: () -> List<Int> = { emptyList() },
 ) {
-    /** 调度状态机（Rust）。队列 / 去重 / 分桶 / 落库的行都在它里面。 */
-    private val state = RustEmbed.Scheduler(
-        RustEmbed.embedConfig(
-            batchSize = batchSize,
-            dim = dim,
-            backfillChunk = backfillChunk,
-            backfillWindowMs = backfillWindowMs,
-            detailMaxTokens = RustEmbed.detailMaxTokens,
-            detailMaxChars = DETAIL_MAX_CHARS,
-        ),
-    )
+    @Volatile
+    private var stateCreated = false
+
+    /** 调度状态机（Rust，懒建：基础版 embedder == null 时不触发 FFI 分配）。队列 / 去重 / 分桶 / 落库的行都在它里面。 */
+    private val state by lazy {
+        stateCreated = true
+        RustEmbed.Scheduler(
+            RustEmbed.embedConfig(
+                batchSize = batchSize,
+                dim = dim,
+                backfillChunk = backfillChunk,
+                backfillWindowMs = backfillWindowMs,
+                detailMaxTokens = RustEmbed.detailMaxTokens,
+                detailMaxChars = DETAIL_MAX_CHARS,
+            ),
+        )
+    }
 
     /** 库操作过河（一次一批）。 */
-    private val store = LibraryEmbedStore(library)
+    private val store by lazy { LibraryEmbedStore(library) }
 
     /**
      * 写进 `item_embedding.model` 的模型标识（跟着后端变；每批现读）。
@@ -92,7 +98,7 @@ class EmbeddingScheduler(
     val available: Boolean get() = embedder?.available == true
 
     /** 现在有没有纯文字批**在算或者排队**（封面向量那条用它让路）。 */
-    val busy: Boolean get() = job?.isActive == true || state.busy()
+    val busy: Boolean get() = job?.isActive == true || (stateCreated && state.busy())
 
     /** 库里现在一共多少条向量（设置页"已算条数"）。 */
     var count: Int by mutableIntStateOf(0)
@@ -126,7 +132,7 @@ class EmbeddingScheduler(
     private var unavailableLogged = false
 
     init {
-        refreshCountAsync()
+        if (embedder != null) refreshCountAsync()
     }
 
     /**
@@ -137,8 +143,8 @@ class EmbeddingScheduler(
         if (items.isEmpty()) return
         // 关着 / 在后台 / 没有模型时**连队列都不进**：否则关着开关浏览一下午，队列会把每一批卡片都攒在内存里
         if (!enabled() || !foreground()) return
-        val e = embedder
-        if (e == null || !e.available) {
+        val e = embedder ?: return
+        if (!e.available) {
             logUnavailable()
             return
         }
@@ -180,14 +186,14 @@ class EmbeddingScheduler(
 
     /** 取消在算的当前，清空三个队列（回前台后由 [offer] / [requestBackfill] 重新开始）。 */
     fun cancel() {
-        state.cancel()
+        if (stateCreated) state.cancel()
         job?.cancel()
         job = null
     }
 
     /** 清空统计（设置里"清除行为数据"之后调；库里的行由 `Library.clearExposure` 清）。 */
     fun resetStats() {
-        state.resetStats()
+        if (stateCreated) state.resetStats()
         count = 0
         computed = 0
         backfilled = 0

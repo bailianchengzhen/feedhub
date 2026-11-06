@@ -102,7 +102,9 @@ fun BehaviorSettings(graph: AppGraph) {
             ) { Text("清除") }
         }
     }
-    LocalEmbeddingSettings(graph, signalsRevision)
+    if (graph.showEmbedding) {
+        LocalEmbeddingSettings(graph, signalsRevision)
+    }
 }
 
 /**

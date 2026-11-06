@@ -407,6 +407,7 @@ class RustTranslateStore(
         enabled: Boolean,
         target: String,
         autoPlatforms: Collection<Platform>,
+        sourceLanguages: Collection<String> = emptyList(),
     ): Boolean = RustTranslate.guard {
         native.shouldAutoTranslate(
             text = text,
@@ -416,6 +417,7 @@ class RustTranslateStore(
                 enabled = enabled,
                 target = target,
                 autoPlatforms = autoPlatforms.map { it.key },
+                sourceLanguages = sourceLanguages.toList(),
             ),
         )
     }
@@ -424,10 +426,20 @@ class RustTranslateStore(
      * 这条内容要不要出**手动**的「翻译」入口。
      *
      * 和 [shouldAutoTranslate] 的区别：**不看平台门控、不看 25 字节门槛**，只看"这本来就不是目标语言"
-     * （中文内容不出现入口）。判定在 Rust（`translate::entry::entry_visible`）。
+     * （中文内容不出现入口）；若指定了 [sourceLanguages]（如 Bergamot 英译中传 `["en"]`），则仅对匹配的源语言出入口。
      */
-    fun entryVisible(text: String, language: String?, target: String): Boolean = RustTranslate.guard {
-        native.entryVisible(text = text, language = language, target = target)
+    fun entryVisible(
+        text: String,
+        language: String?,
+        target: String,
+        sourceLanguages: Collection<String> = emptyList(),
+    ): Boolean = RustTranslate.guard {
+        native.entryVisibleForSources(
+            text = text,
+            language = language,
+            target = target,
+            sourceLanguages = sourceLanguages.toList(),
+        )
     }
 }
 

@@ -105,10 +105,26 @@ pub fn entry_visible(
     target: &str,
     detector: Option<&dyn Detector>,
 ) -> bool {
+    entry_visible_for_sources(text, language, target, &[], detector)
+}
+
+/// 带源语言白名单的 [`entry_visible`]：`source_languages` 为空表示任意非目标语言都出入口；
+/// 非空（例如 Bergamot 单向英译中传 `["en"]`）时只对匹配的源语言出入口，日/韩等其他语种不出入口。
+pub fn entry_visible_for_sources(
+    text: &str,
+    language: Option<&str>,
+    target: &str,
+    source_languages: &[String],
+    detector: Option<&dyn Detector>,
+) -> bool {
     let t = lang::trim(text);
     if t.chars().filter(|c| c.is_alphabetic()).count() < MIN_ENTRY_ALPHA {
         return false;
     }
+    let allows = |tag: &str| {
+        !lang::matches_target(tag, target)
+            && (source_languages.is_empty() || lang::matches_any_lang(tag, source_languages))
+    };
     let platform_language = language
         .map(lang::trim)
         .filter(|s| !s.is_empty())
@@ -117,16 +133,16 @@ pub fn entry_visible(
             !matches!(lower.as_str(), "und" | "zxx" | "qme" | "qht")
         });
     if let Some(lang) = platform_language {
-        return !lang::matches_target(lang, target);
+        return allows(lang);
     }
     let Some(detector) = detector else {
         // 没有识别器：只有平台语言能作数，平台也没说就不给入口。
         return false;
     };
     match detector.detect(t) {
-        Some(detected) => !lang::matches_target(&detected, target),
-        // 认不出（日语 / 韩语 / 其他）：按外语处理。
-        None => true,
+        Some(detected) => allows(&detected),
+        // 认不出（日语 / 韩语 / 其他）：不限源语言时按外语处理；单语对（如仅 en→zh）不出入口。
+        None => source_languages.is_empty(),
     }
 }
 

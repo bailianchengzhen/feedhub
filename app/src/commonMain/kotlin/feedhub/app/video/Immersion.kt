@@ -1,5 +1,6 @@
 package feedhub.app.video
 
+import androidx.compose.animation.core.Easing
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
@@ -11,6 +12,12 @@ import feedhub.core.ProgressiveStream
 import feedhub.core.VideoInfo
 import feedhub.core.VideoPart
 import feedhub.core.VideoStream
+import kotlin.math.abs
+import kotlin.math.hypot
+import kotlin.math.min
+import kotlin.math.roundToInt
+import kotlin.math.sign
+import kotlin.math.sqrt
 
 /**
  * 竖屏视频的沉浸播放里**不带界面**的那部分：
@@ -186,8 +193,53 @@ class ImmersionQueue(
  */
 fun immersionStays(portrait: Boolean, switchedInImmersion: Boolean): Boolean = portrait || switchedInImmersion
 
-/** 一次上下滑要滑过这么多（dp）才算切换，免得手抖 / 点按误触。 */
+/** 一次纯位移上下滑要滑过这么多（dp）才算切换（兜底阈值，[immersionSettleStep] 结合速度与屏高比例判）。 */
 val ImmersionSwipeThreshold = 56.dp
+
+/** 快速轻拂（Fling）翻页要求同方向至少走过这么多位移（避免手指轻点抬起瞬间的微小速度抖动误翻）。 */
+val ImmersionFlingMinDistance = 20.dp
+
+/** 快速轻拂（Fling）翻页的纵向速度门槛（dp/s）：对齐主流短视频大拇指随手一拨即可切条的轻快手感。 */
+val ImmersionFlingVelocity = 300.dp
+
+/** 慢速拖动（松手速度不够 Fling）时，需拖过视口高度的这个比例才翻页，否则平滑吸回当前页。 */
+const val ImmersionSlowDragFraction = 0.18f
+
+/** 慢速拖动翻页阈值的上限（高屏手机 / 平板不必拖过半尺远）。 */
+val ImmersionSlowDragMax = 140.dp
+
+/**
+ * 整屏分页（沉浸刷视频 / 大图查看器）松手后的单调减速缓出曲线 `1 - (1 - u)^3`：
+ * 起点斜率 `f'(0) = 3` 直接承接手指松手时的运动趋势（绝不像 `FastOutSlowInEasing` 那样先刹停再加速），终点平滑归零无回弹过冲。
+ */
+val PagerCubicOutEasing = Easing { fraction ->
+    val inv = 1f - fraction.coerceIn(0f, 1f)
+    1f - inv * inv * inv
+}
+
+/**
+ * 整屏分页松手动画时长（毫秒）：按剩余路程比例与松手速度动态缩放——
+ * 剩余路程越短收尾越快，快速轻拂更干脆利落，慢拖松手平顺滑入。
+ */
+fun pagerSettleDurationMs(
+    distancePx: Float,
+    velocityPxPerSec: Float,
+    paneSizePx: Float,
+    minMs: Int = 95,
+    maxMs: Int = 230,
+): Int {
+    val size = paneSizePx.coerceAtLeast(1f)
+    val dist = abs(distancePx)
+    if (dist <= 0.5f) return 0
+    val distFraction = (dist / size).coerceIn(0f, 1f)
+    val baseMs = minMs + (maxMs - minMs) * sqrt(distFraction)
+    val speedScreensPerSec = (abs(velocityPxPerSec) / size).coerceIn(0f, 4f)
+    val speedFactor = 1f - 0.09f * speedScreensPerSec
+    return (baseMs * speedFactor).roundToInt().coerceIn(minMs, maxMs)
+}
+
+/** 竖向翻页的方向锁比例：过触摸阈值时 `|dy| >= |dx| * ImmersionAxisLockRatio` 才认领竖向翻页，横向/斜滑整场忽略。 */
+const val ImmersionAxisLockRatio = 1.15f
 
 /** 滚轮转多少格算一次切换（桌面滚一格是 1.0）。 */
 const val ImmersionWheelThreshold = 1f
@@ -202,6 +254,33 @@ fun immersionSwipeStep(dyPx: Float, thresholdPx: Float): Int = when {
     else -> 0
 }
 
+/**
+ * 整屏分页器松手结算：结合净位移 [dyPx]（往下为正）与松手纵向速度 [velocityYPxPerSec]（往下为正）判定：
+ * 1. **反向轻拂取消**：例如往下拉了一截又快速往上甩回去，速度超过 [flingVelocityPxPerSec] 则取消切换（返回 0）；
+ * 2. **同向快速轻拂（Fling）**：同向位移达到 [minFlingDistancePx] 且同向速度达到 [flingVelocityPxPerSec] 即翻页；
+ * 3. **慢速拖动**：没有达到轻拂速度时，按视口高度的 [ImmersionSlowDragFraction]（受 [maxSlowDragPx] 封顶，下限 `2.5 * minFlingDistancePx`）判定。
+ */
+fun immersionSettleStep(
+    dyPx: Float,
+    velocityYPxPerSec: Float,
+    paneHeightPx: Float,
+    minFlingDistancePx: Float,
+    flingVelocityPxPerSec: Float,
+    maxSlowDragPx: Float = Float.POSITIVE_INFINITY,
+): Int {
+    if (paneHeightPx <= 0f) return immersionSwipeStep(dyPx, minFlingDistancePx)
+    // 反向甩回 = 用户反悔取消切换
+    if (dyPx < 0f && velocityYPxPerSec >= flingVelocityPxPerSec) return 0
+    if (dyPx > 0f && velocityYPxPerSec <= -flingVelocityPxPerSec) return 0
+    // 同向快速轻拂
+    if (dyPx <= -minFlingDistancePx && velocityYPxPerSec <= -flingVelocityPxPerSec) return 1
+    if (dyPx >= minFlingDistancePx && velocityYPxPerSec >= flingVelocityPxPerSec) return -1
+    // 慢速拖动：过视口比例（有上限封顶）才翻页
+    val slowThreshold = min(paneHeightPx * ImmersionSlowDragFraction, maxSlowDragPx)
+        .coerceAtLeast(minFlingDistancePx * 2.5f)
+    return immersionSwipeStep(dyPx, slowThreshold)
+}
+
 /** 滚轮累计了 [acc] 格之后该切哪一条（[ImmersionWheelThreshold] 一格、向下滚 = 下一条）。 */
 fun immersionWheelStep(acc: Float): Int = when {
     acc >= ImmersionWheelThreshold -> 1
@@ -210,62 +289,124 @@ fun immersionWheelStep(acc: Float): Int = when {
 }
 
 /**
- * "跟手"的位移上限：整块内容最多跟着手指挪画面高度的这个比例（再多就露出底下的下一条封面，
- * 松手后没切过去会弹回去）。
+ * 整屏跟手的位移换算：
+ * - [hasNeighbor] = true（那个方向有上一条 / 下一条）：1:1 跟着手指走满整屏 `[-paneHeightPx, +paneHeightPx]`，
+ *   相邻那条的预览紧贴着边缘 1:1 推入；
+ * - [hasNeighbor] = false（已经是第一条往下拉 / 最后一条往上拉）：给阻尼回弹（最多 15% 屏高），提示到头了。
  */
-fun immersionDragOffset(dyPx: Float, paneHeightPx: Float): Float =
-    dyPx.coerceIn(-paneHeightPx * 0.45f, paneHeightPx * 0.45f)
+fun immersionDragOffset(dyPx: Float, paneHeightPx: Float, hasNeighbor: Boolean = true): Float {
+    if (paneHeightPx <= 0f) return 0f
+    return if (hasNeighbor) {
+        dyPx.coerceIn(-paneHeightPx, paneHeightPx)
+    } else {
+        (dyPx * 0.18f).coerceIn(-paneHeightPx * 0.15f, paneHeightPx * 0.15f)
+    }
+}
 
 /**
  * 沉浸界面**一场触摸**里"上下翻页到底算不算"的账本（[ImmersionScreen] 的上下滑用它；纯逻辑，离线测得到）。
  *
- * 根子都是"这一场触摸其实不归翻页，翻页却照样累计了位移、松手还结算了"：
- * 1. **桌面拖音量条**（进度条这类滑杆同理）：控件在 Main pass 把移动事件消费掉了，翻页那边只在 Final pass
- *    看位置，照样把位移攒起来 → 拖够 56dp 松手就切视频；
- * 2. **手机长按 3 倍速 → 上滑锁定 → 松手**：长按期间上滑的位移被算进了翻页；而"倍速按着没有"这个标记在抬手
- *    那一下会先被长按手势清掉（Main pass 先跑），翻页的 Final pass 再读到它时已经是 false，于是松手就切了。
- *
- * 所以这里按**整场触摸**记账：一旦发现这场触摸归别人（内层控件消费了**按着状态**的移动，或者长按倍速正按着），
- * 这一场就再也不算翻页——位移清零、不再累计、松手 [settle] 返回 0（**不补触发**）。
- *
- * 只认"按着"的消费：抬手那一下会被单击检测（`detectTapGestures`）consume，那是常规做法，
- * 不能因此把正常的上滑翻页也吞掉。
+ * 按**整场触摸**记账：
+ * 1. 内层控件消费了**按着状态**的移动（底部进度条横向拖动、音量条、展开文案滚动、评论抽屉）或长按倍速正按着 →
+ *    [owned] = true，位移清零、松手返回 0；
+ * 2. 给了 [slopPx] > 0 时，先攒位移到过触摸阈值再按 [ImmersionAxisLockRatio] 锁定主轴：
+ *    竖向为主才锁进翻页（[locked] = true），横向 / 斜滑为主则标成 [owned] = true 整场忽略，绝不因横滑夹带纵向偏移误切视频。
  */
-class ImmersionSwipeTracker {
+class ImmersionSwipeTracker(private val slopPx: Float = 0f) {
     /** 跟手的位移（像素，往下为正）。归了别人的时候一直是 0。 */
     var offset: Float = 0f
         private set
 
-    /** 这一场触摸是不是已经归别人了（内层控件消费了移动 / 长按倍速按着）。 */
+    /** 这一场触摸是不是已经归别人（内层控件消费 / 长按倍速 / 起手判为横向手势）。 */
     var owned: Boolean = false
         private set
 
+    /** 这一场触摸是否已经锁定为竖向翻页拖动。 */
+    var locked: Boolean = false
+        private set
+
+    private var rawDx: Float = 0f
+    private var rawDy: Float = 0f
+
     /**
-     * 喂一个"手指按着"的移动事件，返回 true = [offset] 变了（外面要跟着 `onDrag(offset)`）。
+     * 喂一个"手指按着"的移动事件，返回 true = [offset] 变了（外面要跟着更新跟手位移）。
      *
      * @param deltaY 这一下竖着走了多少（往下为正）
-     * @param consumed 这一下有没有被内层控件消费（音量 / 进度条这类滑杆、长按倍速的拖动、拖进度）
+     * @param consumed 这一下有没有被内层控件消费
      * @param speedHeld 长按倍速是不是正按着
+     * @param deltaX 这一下横着走了多少（往右为正；用于过阈值时的横竖主轴锁定）
      */
-    fun move(deltaY: Float, consumed: Boolean, speedHeld: Boolean): Boolean {
+    fun move(deltaY: Float, consumed: Boolean, speedHeld: Boolean, deltaX: Float = 0f): Boolean {
         if (!owned && (speedHeld || consumed)) {
             owned = true
+            locked = false
             offset = 0f
             return true // 位移吐回去（外面画回原位）
         }
         if (owned) return false
+        if (!locked) {
+            if (slopPx <= 0f) {
+                locked = true
+                offset += deltaY
+                return true
+            }
+            rawDx += deltaX
+            rawDy += deltaY
+            if (hypot(rawDx, rawDy) <= slopPx) return false
+            if (abs(rawDy) >= abs(rawDx) * ImmersionAxisLockRatio) {
+                locked = true
+                // 扣掉阈值起步，画面跟手第一帧不跳变
+                offset = rawDy - sign(rawDy) * min(abs(rawDy), slopPx)
+                return true
+            } else {
+                owned = true
+                locked = false
+                offset = 0f
+                return false
+            }
+        }
         offset += deltaY
         return true
     }
 
     /**
-     * 松手：这一场该按多少位移结算（再交给 [immersionSwipeStep] 判方向）。
-     * 归了别人的时候一定是 0——**松手也不补触发翻页**。
+     * 松手：这一场该按多少位移结算。归了别人或还没过阈值时一定是 0——**松手也不补触发翻页**。
      */
-    fun settle(): Float = offset
+    fun settle(): Float = if (locked && !owned) offset else 0f
 
-    /** 这一场要不要换条目（0 = 不换；方向见 [immersionSwipeStep]）。 */
+    /** 这一场要不要换条目（无速度简版；带速度的整屏结算见 [immersionSettleStep]）。 */
     fun step(thresholdPx: Float): Int = immersionSwipeStep(settle(), thresholdPx)
+}
+
+/** 沉浸界面画面中央的半透明播放键什么时候画：没报错、没在加载或缓冲、当前不在播，且已经出过画面或已播完。 */
+fun immersionPausedIndicatorVisible(
+    playing: Boolean,
+    buffering: Boolean,
+    loading: Boolean,
+    hasFrame: Boolean,
+    ended: Boolean,
+    hasError: Boolean,
+): Boolean = !hasError && !loading && !buffering && !playing && (hasFrame || ended)
+
+/** 沉浸底部进度条热区里的拖动归谁：横滑 = 调进度，竖滑 = 放行给外层上下切视频（避免大拇指从屏幕底部往上划时误拉进度条）。 */
+enum class ImmersionProgressAxis { HorizontalScrub, VerticalPassThrough }
+
+fun immersionProgressGestureAxis(dx: Float, dy: Float, slopPx: Float): ImmersionProgressAxis? {
+    if (hypot(dx, dy) <= slopPx) return null
+    return if (abs(dx) >= abs(dy)) ImmersionProgressAxis.HorizontalScrub else ImmersionProgressAxis.VerticalPassThrough
+}
+
+/** 半屏评论抽屉松手时要不要收起：往下甩（速度够）或往下拖过面板高度约 24% 就收起；反悔往上甩则保持展开。 */
+fun commentSheetShouldDismiss(
+    dragPx: Float,
+    sheetHeightPx: Float,
+    velocityYPxPerSec: Float,
+    flingVelocityPxPerSec: Float,
+): Boolean {
+    if (sheetHeightPx <= 0f || dragPx <= 0f) return false
+    if (velocityYPxPerSec <= -flingVelocityPxPerSec) return false
+    if (velocityYPxPerSec >= flingVelocityPxPerSec && dragPx >= sheetHeightPx * 0.05f) return true
+    return dragPx >= sheetHeightPx * 0.24f
 }
 
 // ---------------------------------------------------------------- 音量

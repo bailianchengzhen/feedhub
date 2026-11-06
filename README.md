@@ -16,7 +16,7 @@
 - **本地资料库**：收藏、浏览历史存在本机 SQLite；两台设备之间可以在局域网里扫码同步。
 - **登录**：大部分国内平台支持扫码登录；桌面也可以从本机 Chrome 导入 Cookie。Cookie 只存在本机。
 - **代理**：可以按平台指定代理；内置 sing-box 核心（订阅 / 节点 / 测速），境外平台走代理、代理不可用时不回退直连。
-- **本地翻译**（可选）：llama.cpp + HY-MT1.5 在本机翻译外语内容，不联网。
+- **本地翻译**（可选）：Project Bergamot + Firefox 离线英译中模型，在本机翻译英文内容，不联网。
 - **本地个性化**（可选）：EmbeddingGemma 在本机算向量，只用来调整排序，不删内容。
 - **给 agent 用的接口**（桌面，可选，默认关）：本机 unix socket 上的 HTTP 接口，另有命令行工具 `./feedhub`。
 
@@ -58,20 +58,16 @@
 
 ### 可选依赖：`deps/`
 
-大文件（二进制、模型）不进仓库。约定放在仓库根目录的 `deps/` 下（已在 `.gitignore` 里，放软链接也行），
-也可以用括号里的 Gradle 属性指到别处。下面这些**缺哪样都照常构建**，只是对应功能在 App 里显示"未包含"。
+默认构建不打包本地翻译与本地个性化模型（体积小、零后台模型开销）；需要时传 `-Pfeedhub.translate=true` 或 `-Pfeedhub.embed=true` 启用。大文件（二进制、模型）不进仓库，约定放在仓库根目录的 `deps/` 下（已在 `.gitignore` 里，放软链接也行），也可以用括号里的 Gradle 属性指到别处。下面这些**缺哪样都照常构建**，只是对应功能在 App 里显示"未包含"。
 
 | 放在 | 是什么 | 用来 |
 |---|---|---|
-| `deps/embeddinggemma` | EmbeddingGemma 的 ONNX 导出（`-Pfeedhub.embedModelDir`） | 本地个性化 |
-| `deps/onnxruntime-linux-x64` | ONNX Runtime 1.31.0（`-Pfeedhub.ort.dir`；还需要 gcc 编一个 JNI 小模块） | 桌面的本地个性化 |
-| `deps/translate/HY-MT1.5-1.8B-Q4_K_M.gguf`、`deps/translate/llama.cpp/llama-server` | 翻译模型和 llama.cpp 的 Vulkan 构建（`-Pfeedhub.translate.model` / `-Pfeedhub.translate.server`） | 桌面翻译（默认值，设置里可以改） |
-| `deps/translate/HY-MT1.5-1.8B-Q4_0.gguf` | 翻译模型（`-Pfeedhub.translateModel`） | 安卓翻译 |
-| `deps/llama.cpp-src`（tag b11700）、`deps/hexagon-sdk`、`deps/OpenCL-Headers`、`deps/OpenCL-ICD-Loader` | `tools/translate/build-android.sh` 交叉编译安卓 llama-server 用 | 安卓翻译引擎 |
+| `deps/embeddinggemma` | EmbeddingGemma 的 ONNX 导出（`-Pfeedhub.embedModelDir`） | 本地个性化（`-Pfeedhub.embed=true`） |
+| `deps/onnxruntime-linux-x64` | ONNX Runtime 1.31.0（`-Pfeedhub.ort.dir`；还需要 gcc 编一个 JNI 小模块） | 桌面的本地个性化（`-Pfeedhub.embed=true`） |
+| `deps/bergamot-src` | [mozilla/translations](https://github.com/mozilla/translations) 源码（含 `inference/` 及子模块，`-Pfeedhub.bergamotSrcDir`；由 `tools/translate/build-bergamot.sh` 编译 JNI 库） | 本地翻译引擎（`-Pfeedhub.translate=true`） |
+| `deps/translate/bergamot-enzh` | Firefox 离线英译中模型文件（`-Pfeedhub.translateModelDir`） | 本地翻译模型（`-Pfeedhub.translate=true`） |
 | `deps/android-ndk` | NDK r29（也可以用 `ANDROID_NDK_HOME` 或 `-Pfeedhub.ndk.dir`） | 安卓 |
 | `deps/gst-prefix` | 离线的 GStreamer 开发前缀（`-Pfeedhub.gstPrefix`） | 系统没装 GStreamer 开发包时 |
-
-桌面翻译目前只会用 AMD 的 GPU（RADV 驱动）跑，不会去用独显；没有就不启动翻译。
 
 ## 许可
 

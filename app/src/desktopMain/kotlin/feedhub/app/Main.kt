@@ -18,7 +18,9 @@ import feedhub.app.login.ChromeCookieImporter
 import feedhub.app.ui.FontWarmup
 import feedhub.app.feed.LocalPluggedIn
 import feedhub.app.video.LocalWindowVisible
-import feedhub.app.translate.LlamaTranslationEngine
+import feedhub.app.translate.BergamotModelFiles
+import feedhub.app.translate.DesktopTranslateRuntime
+import feedhub.app.translate.createDesktopTranslationEngine
 import feedhub.app.video.DecodeLedger
 import feedhub.app.video.decodeEnvironmentFingerprint
 import feedhub.core.ProxyMode
@@ -136,8 +138,19 @@ fun desktopGraph(
         proxyCore = core,
         captcha = captcha,
         captchaPrompt = captchaPrompt,
-        translationEngineFactory = { settings -> LlamaTranslationEngine(settings, cacheDir(), ctx.store) },
-        translationCacheDir = cacheDir(),
+        translationEngineFactory = if (BuildFeatures.TRANSLATE && DesktopTranslateRuntime.isBundledOrConfigured()) {
+            { settings -> createDesktopTranslationEngine(settings) }
+        } else {
+            null
+        },
+        translationCacheDir = if (BuildFeatures.TRANSLATE) cacheDir() else null,
+        translationSourceLanguages = if (BuildFeatures.TRANSLATE) BergamotModelFiles.SUPPORTED_SOURCES else emptySet(),
+        translationModelId = if (BuildFeatures.TRANSLATE) BergamotModelFiles.MODEL_ID else null,
+        translationRuntimeDescribe = if (BuildFeatures.TRANSLATE) {
+            { settings -> DesktopTranslateRuntime.describe(settings.value.translationModelPath) }
+        } else {
+            null
+        },
         feedSnapshotDir = feedSnapshotDir ?: cacheDir(),
         // 本地向量：桌面也接上了同一套调度器 / 库 / 筛选，推理在 ORT CPU 上
         embedder = embedder,
@@ -213,11 +226,14 @@ fun main(args: Array<String>) {
     val ctx = LocalFiles.context()
     val wanted = UiScale.wanted(SettingsStore(ctx.store).value)
     val javaScale = UiScale.applyToJava(wanted)
-    // 本地向量：桌面也跑同一套（ORT CPU + q4 图，和安卓 CPU 路径同一个模型标识）。
-    // 模型不在时 `available = false`，整条通路安静地关掉（不加载 .so、不建会话、不算、不存）
+    // 本地向量：开启 -Pfeedhub.embed=true 时桌面跑 ORT CPU + q4 图；基础版不创建
     val graph = desktopGraph(
         ctx = ctx,
-        embedder = feedhub.app.embed.DesktopOnnxTextEmbedder(log = { System.err.println(it) }),
+        embedder = if (BuildFeatures.EMBED) {
+            feedhub.app.embed.DesktopOnnxTextEmbedder(log = { System.err.println(it) })
+        } else {
+            null
+        },
     )
     // 调试入口：FEEDHUB_START=coolapk:74360444 直接打开一条原生详情（截图 / 验收验证码用，正常启动不设就没有）
     val startItem = debugStartItem()
